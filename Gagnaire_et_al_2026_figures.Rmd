@@ -1,0 +1,533 @@
+---
+title: "Integrating genomic and tagging data reveals spatio-temporal population structure in Northeast Atlantic European sea bass"
+author: "Gagnaire et al. (2026)"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 7, dpi = 300)
+```
+
+# Required packages
+
+```{r packages}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(tibble)
+library(patchwork)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(RColorBrewer)
+library(adegenet)
+library(hierfstat)
+library(vegan)
+library(ggrepel)
+library(viridis)
+library(cowplot)
+library(scales)
+library(reshape2)
+```
+
+# Data loading
+
+```{r data-loading}
+# Genomic data (SNP genotype matrix: individuals x SNPs)
+geno <- read.table("data/genotypes.txt", header = TRUE, row.names = 1)
+
+# Population metadata (individual ID, sampling location, year, coordinates)
+metadata <- read.csv("data/metadata.csv")
+
+# Tagging data (individual ID, release location, recapture location, date)
+tagging <- read.csv("data/tagging_data.csv")
+
+# FST matrix between populations
+fst_matrix <- read.csv("data/fst_matrix.csv", row.names = 1)
+
+# Admixture results (Q-matrix from ADMIXTURE or equivalent)
+admix_K2 <- read.table("data/admixture_K2.txt")
+admix_K3 <- read.table("data/admixture_K3.txt")
+
+# Genetic diversity summary per population
+div_stats <- read.csv("data/diversity_statistics.csv")
+```
+
+---
+
+## FIGURE 1 ##
+
+Sampling map showing the collection sites of European sea bass across the Northeast Atlantic
+and the Mediterranean Sea, including sample sizes and the geographic context.
+
+```{r figure1, fig.cap="Figure 1. Sampling map of European sea bass."}
+
+# Load coastline and country boundaries
+world <- ne_countries(scale = "medium", returnclass = "sf")
+europe <- world[world$continent == "Europe" | world$admin %in%
+                  c("Morocco", "Algeria", "Tunisia", "Libya"), ]
+
+# Define color palette for sampling regions
+region_colors <- c(
+  "Bay of Biscay"        = "#2166AC",
+  "English Channel"      = "#4DAC26",
+  "North Sea"            = "#1A9850",
+  "Iberian Atlantic"     = "#D73027",
+  "Western Mediterranean" = "#F46D43",
+  "Eastern Mediterranean" = "#FDAE61"
+)
+
+# Compute sample size per site for point scaling
+site_summary <- metadata %>%
+  group_by(site, longitude, latitude, region) %>%
+  summarise(n = n(), .groups = "drop")
+
+# Main map
+fig1_map <- ggplot() +
+  geom_sf(data = europe, fill = "grey85", color = "grey60", linewidth = 0.3) +
+  geom_point(data = site_summary,
+             aes(x = longitude, y = latitude,
+                 fill = region, size = n),
+             shape = 21, color = "white", stroke = 0.5, alpha = 0.9) +
+  geom_text_repel(data = site_summary,
+                  aes(x = longitude, y = latitude, label = site),
+                  size = 2.8, box.padding = 0.4, point.padding = 0.3,
+                  segment.color = "grey50", segment.size = 0.3) +
+  scale_fill_manual(values = region_colors, name = "Region") +
+  scale_size_continuous(name = "Sample size", range = c(2, 8),
+                        breaks = c(10, 30, 60, 100)) +
+  coord_sf(xlim = c(-20, 40), ylim = c(28, 62), expand = FALSE) +
+  labs(x = "Longitude", y = "Latitude") +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position  = "right",
+    panel.background = element_rect(fill = "#D6EAF8"),
+    panel.grid.major = element_line(color = "white", linewidth = 0.3)
+  )
+
+# Inset bar chart of sample sizes per region
+fig1_inset <- ggplot(site_summary %>%
+                       group_by(region) %>%
+                       summarise(total = sum(n), .groups = "drop"),
+                     aes(x = reorder(region, -total), y = total, fill = region)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = region_colors) +
+  labs(x = NULL, y = "N individuals") +
+  theme_classic(base_size = 9) +
+  theme(axis.text.x = element_text(angle = 40, hjust = 1))
+
+# Combine map and inset
+figure1 <- ggdraw(fig1_map) +
+  draw_plot(fig1_inset, x = 0.60, y = 0.05, width = 0.38, height = 0.30)
+
+figure1
+
+ggsave("figures/Figure1_sampling_map.pdf", figure1,
+       width = 10, height = 7, useDingbats = FALSE)
+ggsave("figures/Figure1_sampling_map.png", figure1,
+       width = 10, height = 7, dpi = 300)
+```
+
+---
+
+## FIGURE 2 ##
+
+Principal Component Analysis (PCA) of genome-wide SNP data illustrating the main axes
+of genomic variation among individuals and sampling regions.
+
+```{r figure2, fig.cap="Figure 2. PCA of genome-wide SNP variation."}
+
+# Perform PCA on the genotype matrix (coded as allele dosage 0/1/2)
+# Replace missing values with column means before PCA
+geno_imp <- apply(geno, 2, function(x) {
+  x[is.na(x)] <- mean(x, na.rm = TRUE)
+  x
+})
+pca_res <- prcomp(geno_imp, scale. = TRUE)
+
+# Proportion of variance explained
+var_exp <- round(100 * pca_res$sdev^2 / sum(pca_res$sdev^2), 2)
+
+# Combine PCA scores with metadata
+pca_df <- data.frame(
+  PC1    = pca_res$x[, 1],
+  PC2    = pca_res$x[, 2],
+  PC3    = pca_res$x[, 3],
+  PC4    = pca_res$x[, 4],
+  ID     = rownames(pca_res$x)
+) %>%
+  left_join(metadata, by = c("ID" = "individual_id"))
+
+# PC1 vs PC2
+p_12 <- ggplot(pca_df, aes(x = PC1, y = PC2, color = region, shape = region)) +
+  geom_point(alpha = 0.75, size = 2.5) +
+  stat_ellipse(aes(group = region), type = "t", level = 0.9,
+               linewidth = 0.6, linetype = "dashed") +
+  scale_color_manual(values = region_colors, name = "Region") +
+  scale_shape_manual(values = c(16, 17, 15, 18, 8, 7), name = "Region") +
+  labs(x = paste0("PC1 (", var_exp[1], "%)"),
+       y = paste0("PC2 (", var_exp[2], "%)")) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "none")
+
+# PC3 vs PC4
+p_34 <- ggplot(pca_df, aes(x = PC3, y = PC4, color = region, shape = region)) +
+  geom_point(alpha = 0.75, size = 2.5) +
+  stat_ellipse(aes(group = region), type = "t", level = 0.9,
+               linewidth = 0.6, linetype = "dashed") +
+  scale_color_manual(values = region_colors, name = "Region") +
+  scale_shape_manual(values = c(16, 17, 15, 18, 8, 7), name = "Region") +
+  labs(x = paste0("PC3 (", var_exp[3], "%)"),
+       y = paste0("PC4 (", var_exp[4], "%)")) +
+  theme_bw(base_size = 12)
+
+# Scree plot (variance explained per PC)
+p_scree <- data.frame(PC = 1:20, VarExp = var_exp[1:20]) %>%
+  ggplot(aes(x = PC, y = VarExp)) +
+  geom_col(fill = "steelblue", width = 0.7) +
+  geom_line(color = "darkred", linewidth = 0.7) +
+  geom_point(color = "darkred", size = 2) +
+  labs(x = "Principal Component", y = "Variance explained (%)") +
+  theme_classic(base_size = 10)
+
+figure2 <- (p_12 | p_34) / p_scree +
+  plot_layout(heights = c(3, 1)) +
+  plot_annotation(tag_levels = "A")
+
+figure2
+
+ggsave("figures/Figure2_PCA.pdf", figure2,
+       width = 12, height = 8, useDingbats = FALSE)
+ggsave("figures/Figure2_PCA.png", figure2,
+       width = 12, height = 8, dpi = 300)
+```
+
+---
+
+## FIGURE 3 ##
+
+Ancestry proportions estimated by ADMIXTURE for K = 2 and K = 3 genetic clusters,
+sorted geographically along a west-to-east axis.
+
+```{r figure3, fig.cap="Figure 3. Individual ancestry proportions from ADMIXTURE."}
+
+# Attach metadata to admixture results (individuals must be in the same order)
+admix_K2_df <- cbind(metadata, admix_K2)
+admix_K3_df <- cbind(metadata, admix_K3)
+
+# Geographic order: sort populations from west (Atlantic) to east (Mediterranean)
+geo_order <- metadata %>%
+  group_by(site, region) %>%
+  summarise(mean_lon = mean(longitude), .groups = "drop") %>%
+  arrange(mean_lon) %>%
+  pull(site)
+
+# Helper function to reshape and plot admixture bar charts
+plot_admixture <- function(df, K, colors, title) {
+  q_cols <- paste0("V", seq_len(K))
+  df_long <- df %>%
+    mutate(individual_id = factor(individual_id,
+                                  levels = df$individual_id[order(match(df$site, geo_order),
+                                                                  df[[q_cols[1]]])]),
+           site = factor(site, levels = geo_order)) %>%
+    pivot_longer(cols = all_of(q_cols),
+                 names_to  = "cluster",
+                 values_to = "ancestry")
+
+  ggplot(df_long, aes(x = individual_id, y = ancestry, fill = cluster)) +
+    geom_col(width = 1, position = "stack") +
+    scale_fill_manual(values = colors, name = "Cluster") +
+    facet_grid(~ site, scales = "free_x", space = "free_x") +
+    labs(x = NULL, y = "Ancestry proportion", title = title) +
+    theme_minimal(base_size = 10) +
+    theme(
+      axis.text.x      = element_blank(),
+      axis.ticks.x     = element_blank(),
+      strip.text       = element_text(angle = 45, hjust = 1, size = 8),
+      panel.spacing    = unit(0.05, "lines"),
+      legend.position  = "bottom"
+    )
+}
+
+p_K2 <- plot_admixture(admix_K2_df, K = 2,
+                       colors = c("#2166AC", "#D73027"), title = "K = 2")
+p_K3 <- plot_admixture(admix_K3_df, K = 3,
+                       colors = c("#2166AC", "#4DAC26", "#D73027"), title = "K = 3")
+
+figure3 <- p_K2 / p_K3 +
+  plot_annotation(tag_levels = "A")
+
+figure3
+
+ggsave("figures/Figure3_admixture.pdf", figure3,
+       width = 14, height = 6, useDingbats = FALSE)
+ggsave("figures/Figure3_admixture.png", figure3,
+       width = 14, height = 6, dpi = 300)
+```
+
+---
+
+## FIGURE 4 ##
+
+Pairwise FST values between sampling sites and an Isolation-by-Distance (IBD) test
+relating genetic differentiation to geographic distance.
+
+```{r figure4, fig.cap="Figure 4. Pairwise FST heatmap and Isolation-by-Distance."}
+
+# --- FST heatmap ---
+fst_long <- fst_matrix %>%
+  rownames_to_column("Pop1") %>%
+  pivot_longer(-Pop1, names_to = "Pop2", values_to = "Fst") %>%
+  mutate(Fst = ifelse(is.na(Fst) | Pop1 == Pop2, NA_real_, Fst))
+
+# Order populations geographically (west to east)
+pop_order <- geo_order[geo_order %in% rownames(fst_matrix)]
+fst_long$Pop1 <- factor(fst_long$Pop1, levels = pop_order)
+fst_long$Pop2 <- factor(fst_long$Pop2, levels = pop_order)
+
+p_fst_heat <- ggplot(fst_long, aes(x = Pop2, y = Pop1, fill = Fst)) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  geom_text(aes(label = ifelse(!is.na(Fst), sprintf("%.3f", Fst), "")),
+            size = 2.8) +
+  scale_fill_gradient2(low = "white", mid = "#FEE090", high = "#D73027",
+                       midpoint = median(fst_long$Fst, na.rm = TRUE),
+                       na.value = "grey95", name = expression(italic(F)[ST])) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x   = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+
+# --- Isolation by Distance ---
+# Compute mean coordinates per population
+pop_coords <- metadata %>%
+  group_by(site) %>%
+  summarise(lon = mean(longitude), lat = mean(latitude), .groups = "drop") %>%
+  filter(site %in% pop_order)
+
+# Geographic distance matrix (great-circle, in km)
+coord_mat    <- as.matrix(pop_coords[, c("lon", "lat")])
+rownames(coord_mat) <- pop_coords$site
+geo_dist     <- as.dist(fields::rdist.earth(coord_mat, miles = FALSE))
+
+# FST / (1 - FST) linearization
+fst_sym      <- as.matrix(fst_matrix)[pop_order, pop_order]
+fst_lin      <- as.dist(fst_sym / (1 - fst_sym))
+
+# Mantel test
+mantel_res   <- vegan::mantel(fst_lin, geo_dist, method = "pearson",
+                               permutations = 999)
+
+# Data frame for scatter plot
+ibd_df <- data.frame(
+  geo_dist = as.vector(geo_dist) / 1000,   # km -> 1000 km
+  fst_lin  = as.vector(fst_lin)
+)
+
+p_ibd <- ggplot(ibd_df, aes(x = geo_dist, y = fst_lin)) +
+  geom_point(alpha = 0.6, color = "#2166AC", size = 2.5) +
+  geom_smooth(method = "lm", color = "#D73027", fill = "#FDAE61",
+              linewidth = 1, se = TRUE) +
+  annotate("text", x = Inf, y = Inf,
+           label = sprintf("Mantel r = %.3f\np = %.3f",
+                           mantel_res$statistic, mantel_res$signif),
+           hjust = 1.1, vjust = 1.5, size = 4) +
+  labs(x = "Geographic distance (× 1,000 km)",
+       y = expression(italic(F)[ST] / (1 - italic(F)[ST]))) +
+  theme_bw(base_size = 12)
+
+figure4 <- p_fst_heat | p_ibd +
+  plot_annotation(tag_levels = "A")
+
+figure4
+
+ggsave("figures/Figure4_FST_IBD.pdf", figure4,
+       width = 14, height = 6, useDingbats = FALSE)
+ggsave("figures/Figure4_FST_IBD.png", figure4,
+       width = 14, height = 6, dpi = 300)
+```
+
+---
+
+## FIGURE 5 ##
+
+Electronic tagging results showing the displacement trajectories of individual sea bass
+and the seasonal distribution of movements across the Northeast Atlantic.
+
+```{r figure5, fig.cap="Figure 5. Individual displacement and seasonal movement from electronic tagging."}
+
+# Tag and release information
+release_sites <- tagging %>%
+  distinct(tag_id, release_lon, release_lat, release_region)
+
+# Recapture / detection events
+detections <- tagging %>%
+  filter(!is.na(recapture_lon)) %>%
+  mutate(season = case_when(
+    lubridate::month(as.Date(date)) %in% c(12, 1, 2) ~ "Winter",
+    lubridate::month(as.Date(date)) %in% c(3, 4, 5)  ~ "Spring",
+    lubridate::month(as.Date(date)) %in% c(6, 7, 8)  ~ "Summer",
+    TRUE                                               ~ "Autumn"
+  ))
+
+# Displacement distance (Haversine)
+detections <- detections %>%
+  mutate(displacement_km = geosphere::distHaversine(
+    cbind(release_lon, release_lat),
+    cbind(recapture_lon, recapture_lat)
+  ) / 1000)
+
+season_colors <- c(Winter = "#4575B4", Spring = "#91CF60",
+                   Summer = "#FC8D59", Autumn = "#D73027")
+
+# --- Map of trajectories ---
+p5_map <- ggplot() +
+  geom_sf(data = europe, fill = "grey85", color = "grey60", linewidth = 0.3) +
+  geom_segment(data = detections,
+               aes(x = release_lon, y = release_lat,
+                   xend = recapture_lon, yend = recapture_lat,
+                   color = season),
+               alpha = 0.4, linewidth = 0.5,
+               arrow = arrow(length = unit(0.08, "inches"), type = "open")) +
+  geom_point(data = release_sites,
+             aes(x = release_lon, y = release_lat),
+             shape = 21, fill = "yellow", color = "black",
+             size = 3, stroke = 0.6) +
+  scale_color_manual(values = season_colors, name = "Season") +
+  coord_sf(xlim = c(-12, 10), ylim = c(38, 56), expand = FALSE) +
+  labs(x = "Longitude", y = "Latitude") +
+  theme_bw(base_size = 12) +
+  theme(panel.background = element_rect(fill = "#D6EAF8"))
+
+# --- Displacement distance by season ---
+p5_disp <- ggplot(detections, aes(x = season, y = displacement_km, fill = season)) +
+  geom_boxplot(outlier.shape = 16, outlier.size = 1.5, alpha = 0.8) +
+  scale_fill_manual(values = season_colors) +
+  labs(x = NULL, y = "Displacement distance (km)") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 30, hjust = 1))
+
+# --- Monthly displacement heatmap (individual × month) ---
+monthly_disp <- detections %>%
+  mutate(month = lubridate::month(as.Date(date), label = TRUE)) %>%
+  group_by(tag_id, month) %>%
+  summarise(mean_disp = mean(displacement_km, na.rm = TRUE), .groups = "drop")
+
+p5_heat <- ggplot(monthly_disp, aes(x = month, y = tag_id, fill = mean_disp)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "plasma", name = "Mean disp. (km)", na.value = "grey90") +
+  labs(x = "Month", y = "Individual tag") +
+  theme_minimal(base_size = 10) +
+  theme(axis.text.y = element_blank())
+
+figure5 <- (p5_map | (p5_disp / p5_heat)) +
+  plot_layout(widths = c(1.8, 1)) +
+  plot_annotation(tag_levels = "A")
+
+figure5
+
+ggsave("figures/Figure5_tagging.pdf", figure5,
+       width = 14, height = 7, useDingbats = FALSE)
+ggsave("figures/Figure5_tagging.png", figure5,
+       width = 14, height = 7, dpi = 300)
+```
+
+---
+
+## FIGURE 6 ##
+
+Integrated comparison of genomic ancestry proportions and tagging-based connectivity
+metrics across sampling sites, illustrating congruence between the two approaches.
+
+```{r figure6, fig.cap="Figure 6. Integrated genomic and tagging comparison."}
+
+# --- Atlantic ancestry proportion per site (from ADMIXTURE K = 2) ---
+genomic_summary <- admix_K2_df %>%
+  group_by(site, region, longitude) %>%
+  summarise(
+    mean_atlantic  = mean(V1),
+    se_atlantic    = sd(V1) / sqrt(n()),
+    .groups = "drop"
+  ) %>%
+  arrange(longitude)
+
+# --- Connectivity index from tagging (proportion of fish moving > 500 km) ---
+tag_connectivity <- detections %>%
+  group_by(release_region) %>%
+  summarise(
+    n_total    = n(),
+    n_distant  = sum(displacement_km > 500, na.rm = TRUE),
+    connect_idx = n_distant / n_total,
+    se_connect  = sqrt(connect_idx * (1 - connect_idx) / n_total),
+    .groups = "drop"
+  )
+
+# Merge genomic and tagging summaries on shared region
+integrated <- genomic_summary %>%
+  left_join(tag_connectivity, by = c("region" = "release_region"))
+
+# --- Panel A: genomic ancestry by longitude ---
+p6a <- ggplot(genomic_summary,
+              aes(x = longitude, y = mean_atlantic, color = region)) +
+  geom_errorbar(aes(ymin = mean_atlantic - se_atlantic,
+                    ymax = mean_atlantic + se_atlantic),
+                width = 0.5, alpha = 0.5) +
+  geom_point(size = 3) +
+  geom_smooth(aes(group = 1), method = "loess", se = FALSE,
+              color = "black", linewidth = 0.8, linetype = "dashed") +
+  scale_color_manual(values = region_colors, name = "Region") +
+  labs(x = "Longitude (°E)", y = "Atlantic ancestry proportion") +
+  theme_bw(base_size = 12)
+
+# --- Panel B: tagging connectivity by longitude ---
+p6b <- ggplot(integrated %>% filter(!is.na(connect_idx)),
+              aes(x = longitude, y = connect_idx, color = region)) +
+  geom_errorbar(aes(ymin = connect_idx - se_connect,
+                    ymax = connect_idx + se_connect),
+                width = 0.5, alpha = 0.5) +
+  geom_point(size = 3) +
+  geom_smooth(aes(group = 1), method = "loess", se = FALSE,
+              color = "black", linewidth = 0.8, linetype = "dashed") +
+  scale_color_manual(values = region_colors, name = "Region") +
+  labs(x = "Longitude (°E)", y = "Tagging connectivity index") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "none")
+
+# --- Panel C: scatter of genomic vs tagging across sites ---
+p6c <- ggplot(integrated, aes(x = mean_atlantic, y = connect_idx, color = region)) +
+  geom_errorbar(aes(ymin = connect_idx - se_connect,
+                    ymax = connect_idx + se_connect),
+                width = 0.01, alpha = 0.5) +
+  geom_errorbarh(aes(xmin = mean_atlantic - se_atlantic,
+                     xmax = mean_atlantic + se_atlantic),
+                 height = 0.01, alpha = 0.5) +
+  geom_point(size = 3.5) +
+  geom_text_repel(aes(label = site), size = 3, box.padding = 0.4) +
+  geom_smooth(aes(group = 1), method = "lm", se = TRUE,
+              color = "black", fill = "grey80", linewidth = 0.8) +
+  scale_color_manual(values = region_colors, name = "Region") +
+  labs(x = "Atlantic ancestry proportion",
+       y = "Tagging connectivity index") +
+  theme_bw(base_size = 12)
+
+figure6 <- (p6a / p6b | p6c) +
+  plot_layout(widths = c(1, 1.2)) +
+  plot_annotation(tag_levels = "A")
+
+figure6
+
+ggsave("figures/Figure6_integrated.pdf", figure6,
+       width = 14, height = 8, useDingbats = FALSE)
+ggsave("figures/Figure6_integrated.png", figure6,
+       width = 14, height = 8, dpi = 300)
+```
