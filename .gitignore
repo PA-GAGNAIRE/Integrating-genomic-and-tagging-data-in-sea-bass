@@ -1,0 +1,18 @@
+# R session / history
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# Generated figures (PNG / PDF outputs)
+figures/*.png
+figures/*.pdf
+
+# knitr cache and intermediate files
+*_cache/
+*_files/
+Gagnaire_et_al_2026_figures.html
+
+# OS files
+.DS_Store
+Thumbs.db
