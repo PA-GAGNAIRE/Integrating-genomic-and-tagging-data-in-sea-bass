@@ -1,0 +1,1440 @@
+---
+title: "European sea bass connectivity dynamics in space and time"
+author: "PA Gagnaire"
+date: "2026-14-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## FIGURE 1 ##
+
+```{r message = FALSE, warning = FALSE}
+
+library('ncdf4')
+library('marmap')
+library('gdistance')
+library('tidyverse')
+library('Matrix')
+library('igraph')
+library('ggOceanMaps')
+library('ggnewscale')
+library('ggrepel')
+library('ggpubr')
+library('ggspatial')
+
+setwd("../data")
+
+# Load sample release coordinates
+RELEAS <- read.table("SAMPLE_RELEASE_COORDS.txt", header=T)
+POPX <- aggregate(x=RELEAS$X,by=list(RELEAS$population),FUN = mean)
+colnames(POPX) <- c("POP","X")
+POPY <- aggregate(x=RELEAS$Y,by=list(RELEAS$population),FUN = mean)
+colnames(POPY) <- c("POP","Y")
+POP_COORDS <- left_join(POPX,POPY,by='POP')
+POP_COORDS <- POP_COORDS[c(2,7,6,5,1,10,9,3,8,4),]
+
+# FIG 1A # map version with the ICES polygons
+myPal <- colorRampPalette(c("red","gold","blue"))
+
+P1 = basemap(limits = c(-12,7,42,54), bathymetry = TRUE,  land.col = "#eeeac4", grid.col = NA, grid.size = 0.5, base_size = 18, bathy.style = "poly_greys") +
+  labs(x = "Longitude", y = "Latitude") +
+  ggnewscale::new_scale_fill() +
+  annotation_spatial(ices_areas[36:37,], mapping = aes(), fill="purple", col="purple", alpha = 0.1) + 
+  annotation_spatial(ices_areas[39:40,], mapping = aes(), fill="orange", col="orange", alpha = 0.1) + 
+  annotation_spatial(ices_areas[c(7:8,43:48),], mapping = aes(), fill="green", col="green", alpha = 0.1) + 
+  annotation_spatial(ices_areas[c(27,41:42),], mapping = aes(), fill="blue", col="blue", alpha = 0.1) + 
+  theme(legend.position = "none")
+
+P1 = reorder_layers(P1) + annotation_scale(location = "br") +
+  geom_sf_label(data = suppressWarnings(sf::st_centroid(sf::st_make_valid(ices_areas[36:37,]))), col="purple", aes(label = Area_Full), fill=NA, label.size = NA) +
+  geom_sf_label(data = suppressWarnings(sf::st_centroid(sf::st_make_valid(ices_areas[39:40,]))), col="orange", aes(label = Area_Full), fill=NA, label.size = NA) +
+  geom_sf_label(data = suppressWarnings(sf::st_centroid(sf::st_make_valid(ices_areas[c(7:8,43:48),]))), col="green", aes(label = Area_Full), fill=NA, label.size = NA) +
+  geom_sf_label(data = suppressWarnings(sf::st_centroid(sf::st_make_valid(ices_areas[c(27,41:42),]))), col="blue", aes(label = Area_Full), fill=NA, label.size = NA) +
+  geom_spatial_point(POP_COORDS, mapping=aes(x=X,y=Y), colour=myPal(10), cex=4, crs = 4326) +
+  stat_spatial_identity(POP_COORDS, mapping=aes(x=X,y=Y, label = POP), colour=myPal(10), geom = "label_repel", cex=5) + ggtitle("Locations of tagging surveys")
+
+
+# Load sample migration phenotypes
+PHENO = read.table("SAMPLE_MIGRATION_PHENOTYPE.txt", header=T)
+
+# FIG 1B # 
+# Proportion of long-distance migrants per location  
+MIG_PROP <- PHENO %>% count(population,mvt_strategies) %>% na.exclude() %>% group_by(population) %>% mutate(freq = 100*(n/sum(n))) %>% filter(mvt_strategies=="migrant")
+MIG_PROP <- MIG_PROP[c(2,7,6,5,1,10,9,3,8,4),]
+MIG_PROP$population <- factor(MIG_PROP$population, levels = MIG_PROP$population)
+myPal <- colorRampPalette(c("red","gold","blue"))
+P2 = ggplot(MIG_PROP, aes(x = population, y = freq)) + geom_bar(stat="identity",fill=myPal(10)) + labs(x = "", y = "Long-distance migrants (%)") + theme_classic() + theme(axis.text=element_text(size=12), axis.title=element_text(size=20))
+
+# FIG 1C # 
+# Proportion of spawning fidelity per location  
+FID_PROP <- PHENO %>% count(population,spawning_behavior) %>% na.exclude() %>% group_by(population) %>% mutate(freq = 100*(n/sum(n))) %>% filter(spawning_behavior=="Fidelity")
+FID_PROP <- FID_PROP[c(2,7,6,5,1,10,9,3,8,4),]
+FID_PROP$population <- factor(FID_PROP$population, levels = FID_PROP$population)
+myPal <- colorRampPalette(c("red","gold","blue"))
+P3 = ggplot(FID_PROP, aes(x = population, y = freq)) + geom_bar(stat="identity",fill=myPal(10)) + labs(x = "", y = "Spawning site fidelity (%)") + theme_classic() + theme(axis.text=element_text(size=12), axis.title=element_text(size=20))
+
+# FIG 1D # 
+# Proportion of NS/BOB fidelity per location  
+NSBOB_PROP <- PHENO %>% count(population,spawning_ground_strategy) %>% na.exclude() %>% group_by(population) %>% mutate(freq = 100*(n/sum(n))) %>% group_by(spawning_ground_strategy)
+NSBOB_PROP <- NSBOB_PROP[c(3,10,9,8,1,2,13,12,4,5,11,6,7),]
+P4 = ggplot(NSBOB_PROP, aes(fill = spawning_ground_strategy, x = population, y = freq)) + geom_bar(stat="identity", show.legend = F) + labs(x = "", y = "NS/BOB spawning site fidelity") + theme_classic() + theme(axis.text=element_text(size=12), axis.title=element_text(size=20)) + scale_x_discrete(limits=rev(POPS)) +
+  scale_fill_manual(values = c("orange","green"))
+
+P5 = ggarrange(P2, P3, P4, labels = c("B","C","D"), ncol = 3, nrow = 1, common.legend = F)
+
+
+# Load sample summer and winter coordinates (07/09/22)
+COORDS <- read.table("SAMPLE_SUMMER_WINTER_COORDS.txt", header=T)
+# Sort individuals by sample name 
+COORDS <- arrange(COORDS, sample_filename)
+
+# FIG 1E # Map the SUMMER1 Coordinates
+myPal <- colorRampPalette(c("blue","gold","red"))
+POPS = c("DK","PB","CH","SM","SQ","AD","LT","OL","NO","CB")
+
+IND_COORDS = NULL
+IND_COL = NULL
+for (p in 1:length(POPS))
+  {
+  X <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Summer1_X,Summer1_Y))$Summer1_X
+  Y <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Summer1_X,Summer1_Y))$Summer1_Y
+  POP_P <- cbind(X,Y)
+  COL <- rep(myPal(10)[p],nrow(POP_P))
+  IND_COORDS <- rbind(IND_COORDS,POP_P)
+  IND_COL <- c(IND_COL,COL)
+  }
+IND_COORDS = data.frame(IND_COORDS)
+
+P6 = basemap(limits = c(-12,7,42,54), bathymetry = TRUE,  land.col = "#eeeac4", grid.col = NA, grid.size = 0.5, base_size = 18, bathy.style = "poly_greys") +
+  labs(x = "Longitude", y = "Latitude") +
+  ggnewscale::new_scale_fill() +
+  annotation_spatial(ices_areas[36:37,], mapping = aes(), fill="purple", col="purple", alpha = 0) + 
+  annotation_spatial(ices_areas[39:40,], mapping = aes(), fill="orange", col="orange", alpha = 0) + 
+  annotation_spatial(ices_areas[c(7:8,43:48),], mapping = aes(), fill="green", col="green", alpha = 0) + 
+  annotation_spatial(ices_areas[c(27,41:42),], mapping = aes(), fill="blue", col="blue", alpha = 0) + 
+  theme(legend.position = "none")
+P6 = reorder_layers(P6) + annotation_scale(location = "br") +
+  geom_spatial_point(IND_COORDS, mapping=aes(x=X,y=Y), colour=IND_COL, cex=2, crs = 4326) + ggtitle("Individuals positions - First Summer")
+
+
+# FIG 1F # Map the WINTER1 Coordinates
+myPal <- colorRampPalette(c("blue","gold","red"))
+POPS = c("DK","PB","CH","SM","SQ","AD","LT","OL","NO","CB")
+
+IND_COORDS = NULL
+IND_COL = NULL
+for (p in 1:length(POPS))
+  {
+  X <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Winter1_X,Winter1_Y))$Winter1_X
+  Y <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Winter1_X,Winter1_Y))$Winter1_Y
+  POP_P <- cbind(X,Y)
+  COL <- rep(myPal(10)[p],nrow(POP_P))
+  IND_COORDS <- rbind(IND_COORDS,POP_P)
+  IND_COL <- c(IND_COL,COL)
+  }
+IND_COORDS = data.frame(IND_COORDS)
+
+P7 = basemap(limits = c(-12,7,42,54), bathymetry = TRUE,  land.col = "#eeeac4", grid.col = NA, grid.size = 0.5, base_size = 18, bathy.style = "poly_greys") +
+  labs(x = "Longitude", y = "Latitude") +
+  ggnewscale::new_scale_fill() +
+  annotation_spatial(ices_areas[36:37,], mapping = aes(), fill="purple", col="purple", alpha = 0) + 
+  annotation_spatial(ices_areas[39:40,], mapping = aes(), fill="orange", col="orange", alpha = 0) + 
+  annotation_spatial(ices_areas[c(7:8,43:48),], mapping = aes(), fill="green", col="green", alpha = 0) + 
+  annotation_spatial(ices_areas[c(27,41:42),], mapping = aes(), fill="blue", col="blue", alpha = 0) + 
+  theme(legend.position = "none")
+P7 = reorder_layers(P7) + annotation_scale(location = "br") +
+  geom_spatial_point(IND_COORDS, mapping=aes(x=X,y=Y), colour=IND_COL, cex=2, crs = 4326) + ggtitle("Individuals positions - First Winter")
+
+
+# PLOT WHOLE FIG 1 #
+P8 = ggarrange(P1, P5, P6, P7, labels = c("A","","E","F"), ncol = 2, nrow = 2, common.legend = TRUE, legend = "bottom")
+P8
+```
+
+
+## FIGURE 2 ##
+
+```{r message = FALSE, warning = FALSE}
+
+library('StAMPP')
+library('adegenet')
+library('parallel')
+library('poppr')
+library('hierfstat')
+library('dendextend')
+library('pheatmap')
+library('viridis')
+library('marmap')
+library('tidyverse')
+library('plotrix')
+
+setwd("../data/")
+
+# Load genotype data with the read.PLINK function to build an object of class genlight
+gDAT <- read.PLINK(file='BARFRAY_765_ATL_SAMPLES__47211_SNPS_MAF0.01_HWE0.0001.raw', n.cores=1)
+
+# Add chromosome and position information from plink .map file
+gMAP <- read.table('BARFRAY_765_ATL_SAMPLES__47211_SNPS_MAF0.01_HWE0.0001.map', header=F)
+chr(gDAT) <- gMAP$V1
+position(gDAT) <- gMAP$V4
+
+# Add tagging site information as population
+gPOP <- read.table('BARFRAY_765_ATL_SAMPLES_POPMAP.txt', header=T)
+pop(gDAT) <- gPOP[order(gPOP$IID),]$POP_CODE
+
+# Print the sample size for each pop
+summary(gDAT$pop)
+
+# FIG 2A # Heatmap of pairwise Fst values with hierarchical clustering
+
+# Compute pairwise FST (Weir & Cockerham 1984), with 10000 bootstraps across loci to generate 95% CIs and p-values
+# pw_fst <- stamppFst(gDAT, nboots=10000, percent=95, nclusters=10)
+
+# load Fst values and make a square matrix
+fst <- pw_fst$Fsts
+diag(fst) <- 0
+symm_fst <- fst
+symm_fst[upper.tri(symm_fst)] <- t(fst)[upper.tri(symm_fst)]
+symm_fst <- pmax(symm_fst, 0)
+
+# Make hierarchical clustering of pairwise Fst values
+hclust_loc <- hclust(dist(symm_fst), method = "complete")
+
+# Flip nodes to order samples locations (does not affect the tree)
+loc_order <- c("FA","CB","OL","NO","LT","AD","SQ","SM","CH","PB","DK")
+hclust_loc_col <- rotate(hclust_loc, loc_order)
+hclust_loc_row <- rotate(hclust_loc, loc_order)
+
+# Prepare annotation colors
+tree_col <- data.frame(cutree(hclust_loc, k = 3))
+colnames(tree_col) <- "cluster"
+tree_col$cluster <- ifelse(tree_col$cluster==1, "cluster2",
+                   ifelse(tree_col$cluster==2, "cluster3", "cluster1"))
+
+ices_col <- as.factor(c("NS","NS","BOB","BOB","BOB","NS","BOB","NS","BOB","NS","Iberian"))
+tree_col$ices <- ices_col
+
+loc_col <- data.frame(location = loc_order)
+row.names(loc_col) <- loc_col$location
+
+myPal <- colorRampPalette(c("blue","gold","red"))
+fill=c(myPal(10),"red4")
+
+my_colour = list(
+    location = c(FA=fill[11],CB=fill[10],OL=fill[9],NO=fill[8],LT=fill[7],AD=fill[6],SQ=fill[5],SM=fill[4],CH=fill[3],PB=fill[2],DK=fill[1]),
+    ices = c(Iberian="purple", BOB="orange", NS="green"),
+    cluster = c(cluster1="violet", cluster2="#ffb366", cluster3="lightgreen"))
+
+# load P-values and make a matrix
+Pv <- pw_fst$Pvalues
+diag(Pv) <- 1
+symm_Pv <- Pv
+symm_Pv[upper.tri(symm_Pv)] <- t(Pv)[upper.tri(symm_Pv)]
+
+# Function to assign significance levels
+signif <- function(p)
+  {ifelse(p == 1, ".",
+  ifelse(p < 0.001, "***",
+  ifelse(p < 0.01, "**",
+  ifelse(p < 0.05, "*", "NS"))))}
+
+# Apply the function to the matrix of P-values
+signif_matrix <- matrix(signif(symm_Pv), nrow = nrow(symm_Pv), ncol = ncol(symm_Pv))
+
+# Make the plot
+Q1 <- pheatmap(symm_fst, color = viridis(n = 256, alpha = 1, begin = 0.15, end = 1, direction = -1), breaks = seq(0, 0.001, length.out = 257), display_numbers = signif_matrix, fontsize_number = 10, cluster_rows = hclust_loc_row, cluster_cols = hclust_loc_col, annotation_colors = my_colour, annotation_row = tree_col, annotation_col = loc_col, treeheight_row = 0, treeheight_col = 150)
+
+
+# FIG 2B # PCA analysis
+
+# Perform a PCA analysis that includes all individuals (from the 10 French location and southern Portugal)
+pca <- glPca(gDAT, nf=2, parallel=TRUE, n.cores=20)
+
+# Compute variance explained by the 10 first PC axes
+axis_var <- data.frame(axis = c(1:10), eig = pca$eig[c(1:10)]) %>% dplyr::mutate(p.eig = 100*(eig/sum(pca$eig)))
+pc1 <- paste("PC1 (", paste(round(axis_var$p.eig[1],2)), "%)",sep="")
+pc2 <- paste("PC2 (", paste(round(axis_var$p.eig[2],2)), "%)",sep="")
+
+# Plot the PCA representing only the 10 populations from BARFRAY, with PC1 oriented by Mediterranean ancestry
+coords <- pca$scores[1:705,]
+coords[,1] <- -coords[,1]
+
+myPal <- colorRampPalette(c("blue","gold","red"))
+Q2 = with(pca, plot(coords, yaxt="n", xlim=c(-8,6), ylim=c(-12,10), ylab=pc2, xlab=pc1, col="white"))
+legend("topleft",legend=c("CB","OL","NO","LT","AD","SQ","SM","CH","PB","DK") ,horiz=T,cex=1.05, fill=rev(myPal(10)))
+axis(2, las=2)
+abline(h=0,v=0,col="grey", lty=2)
+
+s.class(coords, fac=factor(gPOP[order(gPOP$IID),][1:705,]$POP_CODE), 
+        add.plot=T, 
+        cpoint=2,
+        clabel=0,
+        pch=20,
+        axesell=F,
+        addaxes=F,
+        cstar=0,
+        col=transp(myPal(10)[c(6,10,3,1,7,9,8,2,4,5)],0.6),
+        cellipse = 1.5)
+
+
+# FIG 2C # Mediterranean ancestry gradient
+
+# Load sample release coordinates
+RELEAS <- read.table("SAMPLE_RELEASE_COORDS.txt", header=T)
+POPX <- aggregate(x=RELEAS$X,by=list(RELEAS$population),FUN = mean)
+colnames(POPX) <- c("POP","X")
+POPY <- aggregate(x=RELEAS$Y,by=list(RELEAS$population),FUN = mean)
+colnames(POPY) <- c("POP","Y")
+POP_COORDS <- left_join(POPX,POPY,by='POP')
+POP_COORDS <- POP_COORDS[c(2,7,6,5,1,10,9,3,8,4),]
+
+# Load sample admixture proportions, calculate mean and SE per location
+ADMIX <- read.table("SAMPLE_ADMIXTURE_PROPORTIONS.txt", header=T)
+MEAN_MED <- aggregate(x=ADMIX$Q1,by=list(ADMIX$Pop),FUN = mean)
+colnames(MEAN_MED) <- c("POP","MED_ANC")
+MEAN_MED <- MEAN_MED[c(2,8,7,6,1,11,10,3,9,4),]
+SE_MED <- aggregate(x=ADMIX$Q1,by=list(ADMIX$Pop),FUN = std.error)
+colnames(SE_MED) <- c("POP","MED_ANC_SE")
+SE_MED <- SE_MED[c(2,8,7,6,1,11,10,3,9,4),]
+
+# Load bathymetry on the northeast Atlantic
+ATLF <- getNOAA.bathy(lon1=-15,lon2=12,lat1=35,lat2=55,resolution=2)
+
+# Compute transition object with path impossible in waters deeper than -200 meters depth
+trans <- trans.mat(ATLF,min.depth=5,max.depth=-200)
+
+# Compute least cost distances for the transition matrix
+out_dist <- lc.dist(trans, rbind(c(-7.7991639, 37.00795),POP_COORDS[,2:3]), res ="dist")
+
+# Add least cost distance to Faro location to the Mediterranean ancestry dataframe
+MEAN_MED$dist <- out_dist[1:10]
+
+# Make the plot
+myPal <- colorRampPalette(c("red","gold","blue"))
+plot(MED_ANC~dist, data=MEAN_MED, col=myPal(10), pch=20, cex=3, xlim=c(1500,2700),ylim=c(0,0.13), xlab="Distance to FA - southern Portugal (km)", ylab="Mean Mediterranean ancestry")
+
+# Fit the tanh model
+tanh_model <- nls(MED_ANC ~ a * tanh(b * rev(dist) + c) + d, data=MEAN_MED,
+                  start = list(a = 1, b = 0.0005, c = -0.2, d = 0), algorithm = "default")
+
+# Add the fitted curve for the observed data points
+lines(MEAN_MED$dist, predict(tanh_model), col= "darkgrey", lty =2 , lwd = 2)
+points(MED_ANC~dist, data=MEAN_MED, col=myPal(10), pch=20, cex=3)
+segments(MEAN_MED$dist,MEAN_MED$MED_ANC-SE_MED$MED_ANC_SE,MEAN_MED$dist,MEAN_MED$MED_ANC+SE_MED$MED_ANC_SE, col=myPal(10), lwd = 2)
+text(MEAN_MED$dist+30,MED_ANCESTRY+0.01,POP_COORDS$POP, col=myPal(10))
+
+```
+
+
+## FIGURE 3 ##
+
+```{r message = FALSE, warning = FALSE}
+
+library('dplyr')
+library('marmap')
+library('ggpubr')
+library('plotrix')
+
+setwd("../data")
+
+# Load bathymetry on the northeast Atlantic
+ATLF <- getNOAA.bathy(lon1=-15,lon2=12,lat1=35,lat2=55,resolution=2)
+# Compute transition object with path impossible in waters deeper than -200m depth
+trans <- trans.mat(ATLF,min.depth=50,max.depth=-200)
+
+# Load sample summer and winter coordinates (07/09/22)
+COORDS <- read.table("SAMPLE_SUMMER_WINTER_COORDS.txt", header=T)
+# Sort individuals by sample name 
+COORDS <- arrange(COORDS, sample_filename)
+# Load sample admixture proportions
+ADMIX <- read.table("SAMPLE_ADMIXTURE_PROPORTIONS.txt", header=T)
+
+# FIG 3A # Mediterranean ancestry gradient in First Summer
+
+# Extract the SUMMER1 Coordinates, excluding NAs
+SUMMER1_COORDS <- COORDS %>% dplyr::select(sample_name,Summer1_X,Summer1_Y) %>% drop_na(Summer1_X,Summer1_Y)
+
+# Get the depth for each point, and filter by depth to remove points outside of the [50;-200] depth range
+SUMMER1_DEPTH <- get.depth(ATLF, x=SUMMER1_COORDS$Summer1_X, y=SUMMER1_COORDS$Summer1_Y, locator=FALSE)
+names(SUMMER1_DEPTH)[1] <- "Summer1_X"
+names(SUMMER1_DEPTH)[2] <- "Summer1_Y"
+SUMMER1_COORDS_DEPTH <- left_join(SUMMER1_COORDS, SUMMER1_DEPTH, by = c("Summer1_X" = "Summer1_X", "Summer1_Y" = "Summer1_Y"))
+SUMMER1_COORDS <- SUMMER1_COORDS_DEPTH %>% filter(depth>-200) %>% filter(depth<50)
+
+# Compute least cost distances for the transition matrix
+ind_dist <- lc.dist(trans, rbind(c(-7.7991639, 37.00795),SUMMER1_COORDS[,2:3]), res ="dist")
+SUMMER1_COORDS$dist <- ind_dist[1:nrow(SUMMER1_COORDS)]
+names(SUMMER1_COORDS)[1] <- "IND"
+
+# Join Summer1 individuals distances with sample admixture proportions
+SUMMER1_ADMIX_DIST <- left_join(SUMMER1_COORDS, ADMIX, by = c("IND" = "IND"))
+
+# Bin the distance values into quantiles (equal number of points per bin), using 20 bins
+n_bins <- 20
+bins <- quantile(SUMMER1_ADMIX_DIST$dist, probs = seq(0, 1, length.out = n_bins + 1))
+x_bins <- cut(SUMMER1_ADMIX_DIST$dist, breaks = bins, include.lowest = TRUE)
+# Calculate midpoints for each bin
+midpoints <- sapply(1:(length(bins) - 1), function(i) mean(bins[i:(i+1)]))
+# Map midpoints to each bin
+mid_x <- midpoints[as.numeric(x_bins)]
+# Create a list of y values corresponding to each bin
+y_list <- split(SUMMER1_ADMIX_DIST$Q1, x_bins)
+
+# Plot the boxplots using midpoints as x-axis values
+myPal <- colorRampPalette(c("red","gold","blue"))
+boxplot(y_list, at = midpoints, names = round(midpoints, 2), outline = F, xaxt = 'n', xlim=c(1320,2750), ylim=c(0,0.3), boxwex = 15, col=myPal(n_bins), xlab = "Interval midpoint distance to FA (km)", ylab = "Mediterranean ancestry")
+rect(min(SUMMER1_ADMIX_DIST$dist),-0.05,1997,0.35,col = rgb(1, 0.5, 0, alpha = 0.1), border = NA)
+rect(1997,-0.05,max(SUMMER1_ADMIX_DIST$dist)+100,0.35,col = rgb(0, 1, 0, alpha = 0.1), border = NA)
+axis(1, at = pretty(SUMMER1_ADMIX_DIST$dist), labels = pretty(SUMMER1_ADMIX_DIST$dist))
+abline(v=1729,lty=2,col="orange")
+abline(v=2304,lty=2,col="green")
+abline(v=2626,lty=2,col="green")
+boxplot(y_list, at = midpoints, names = round(midpoints, 2), outline = F, xaxt = 'n', yaxt = 'n', boxwex = 15, col=myPal(n_bins), add = TRUE)
+text(2000,0.29,expression(bold("First Summer")),cex=1.2)
+text(1725,0.27,"BOB ICES stock area", col="orange")
+text(1500,0.25,"27.8.b", col="orange")
+text(1875,0.25,"27.8.a", col="orange")
+text(2410,0.27,"NS ICES stock area", col="green")
+text(2150,0.25,"27.7.e", col="green")
+text(2150,0.235,"27.7.h", col="green")
+text(2475,0.25,"27.7.d", col="green")
+text(2725,0.25,"27.4.c", col="green")
+
+
+# FIG 3C # Mediterranean ancestry gradient in First Winter
+
+# Extract the WINTER1 Coordinates, excluding NAs
+WINTER1_COORDS <- COORDS %>% dplyr::select(sample_name,Winter1_X,Winter1_Y) %>% drop_na(Winter1_X,Winter1_Y)
+
+# Get the depth for each point, and filter by depth to remove points outside of the [50;-200] depth range
+WINTER1_DEPTH <- get.depth(ATLF, x=WINTER1_COORDS$Winter1_X, y=WINTER1_COORDS$Winter1_Y, locator=FALSE)
+names(WINTER1_DEPTH)[1] <- "Winter1_X"
+names(WINTER1_DEPTH)[2] <- "Winter1_Y"
+WINTER1_COORDS_DEPTH <- left_join(WINTER1_COORDS, WINTER1_DEPTH, by = c("Winter1_X" = "Winter1_X", "Winter1_Y" = "Winter1_Y"))
+WINTER1_COORDS <- WINTER1_COORDS_DEPTH %>% filter(depth>-200) %>% filter(depth<50)
+
+# Compute least cost distances for the transition matrix
+ind_dist <- lc.dist(trans, rbind(c(-7.7991639, 37.00795),WINTER1_COORDS[,2:3]), res ="dist")
+WINTER1_COORDS$dist <- ind_dist[1:nrow(WINTER1_COORDS)]
+names(WINTER1_COORDS)[1] <- "IND"
+
+# Join Winter1 individuals distances with sample admixture proportions
+WINTER1_ADMIX_DIST <- left_join(WINTER1_COORDS, ADMIX, by = c("IND" = "IND"))
+
+# Bin the distance values into quantiles (equal number of points per bin), using 20 bins
+n_bins <- 20
+bins <- quantile(WINTER1_ADMIX_DIST$dist, probs = seq(0, 1, length.out = n_bins + 1))
+x_bins <- cut(WINTER1_ADMIX_DIST$dist, breaks = bins, include.lowest = TRUE)
+# Calculate midpoints for each bin
+midpoints <- sapply(1:(length(bins) - 1), function(i) mean(bins[i:(i+1)]))
+# Map midpoints to each bin
+mid_x <- midpoints[as.numeric(x_bins)]
+# Create a list of y values corresponding to each bin
+y_list <- split(WINTER1_ADMIX_DIST$Q1, x_bins)
+
+# Plot the boxplots using midpoints as x-axis values
+myPal <- colorRampPalette(c("red","gold","blue"))
+boxplot(y_list, at = midpoints, names = round(midpoints, 2), outline = F, xaxt = 'n', xlim=c(1320,2750), ylim=c(0,0.3), boxwex = 15, col=myPal(n_bins), xlab = "Interval midpoint distance to FA (km)", ylab = "Mediterranean ancestry")
+rect(min(WINTER1_ADMIX_DIST$dist),-0.05,1997,0.35,col = rgb(1, 0.5, 0, alpha = 0.1), border = NA)
+rect(1997,-0.05,max(WINTER1_ADMIX_DIST$dist)+100,0.35,col = rgb(0, 1, 0, alpha = 0.1), border = NA)
+axis(1, at = pretty(WINTER1_ADMIX_DIST$dist), labels = pretty(WINTER1_ADMIX_DIST$dist))
+abline(v=1729,lty=2,col="orange")
+abline(v=2304,lty=2,col="green")
+abline(v=2626,lty=2,col="green")
+boxplot(y_list, at = midpoints, names = round(midpoints, 2), outline = F, xaxt = 'n', yaxt = 'n', boxwex = 15, col=myPal(n_bins), add = TRUE)
+text(2000,0.29,expression(bold("First Winter")),cex=1.2)
+text(1725,0.27,"BOB ICES stock area", col="orange")
+text(1500,0.25,"27.8.b", col="orange")
+text(1875,0.25,"27.8.a", col="orange")
+text(2410,0.27,"NS ICES stock area", col="green")
+text(2150,0.25,"27.7.e", col="green")
+text(2150,0.235,"27.7.h", col="green")
+text(2475,0.25,"27.7.d", col="green")
+text(2725,0.25,"27.4.c", col="green")
+
+```
+
+
+## FIGURE 4 ##
+
+```{r message = FALSE, warning = FALSE}
+
+library('adegenet')
+library('parallel')
+library('tidyverse')
+library('lme4')
+
+setwd("../data")
+
+# FIG 4 # Test for regional philopatry using a Generalized Linear Model (GLM) or a mixed-effects model (GLMM) to test for a significant correlation between individual coordinate on PC1 and Winter1 latitude across multiple tagging locations, while accounting for variation in the correlation across these locations. 
+
+# Load genotype data with the read.PLINK function to build an object of class genlight
+gDAT <- read.PLINK(file='BARFRAY_765_ATL_SAMPLES__47211_SNPS_MAF0.01_HWE0.0001.raw', n.cores=1)
+
+# Add chromosome and position information from plink .map file
+gMAP <- read.table('BARFRAY_765_ATL_SAMPLES__47211_SNPS_MAF0.01_HWE0.0001.map', header=F)
+chr(gDAT) <- gMAP$V1
+position(gDAT) <- gMAP$V4
+
+# Add tagging site information as population
+gPOP <- read.table('BARFRAY_765_ATL_SAMPLES_POPMAP.txt', header=T)
+pop(gDAT) <- gPOP[order(gPOP$IID),]$POP_CODE
+
+# Perform a PCA analysis that includes all individuals (from the 10 French location and southern Portugal)
+pca <- glPca(gDAT, nf=2, parallel=TRUE, n.cores=20)
+
+# Extract individual coordinates from FIG 2B 
+coords <- pca$scores[1:705,]
+pc1 <- -coords[,1]
+
+# Prepare data frame of individual PC1 coordinates:
+sampID <- names(pc1)
+PC1 <- data.frame(cbind(sampID,pc1))
+
+# Load sample summer and winter coordinates (07/09/22) and extract winter1 positions
+COORDS <- read.table("SAMPLE_SUMMER_WINTER_COORDS.txt", header=T)
+COORDS <- arrange(COORDS, sample_filename)
+POPS = c("DK","PB","CH","SM","SQ","AD","LT","OL","NO","CB")
+
+IND_COORDS = NULL
+for (p in 1:length(POPS))
+  {
+  sampID <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Winter1_X,Winter1_Y))$sample_filename
+  X <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Winter1_X,Winter1_Y))$Winter1_X
+  Y <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Winter1_X,Winter1_Y))$Winter1_Y
+  POP_P <- cbind(sampID,POPS[p],X,Y)
+  IND_COORDS <- rbind(IND_COORDS,POP_P)
+  }
+IND_COORDS = data.frame(IND_COORDS)
+colnames(IND_COORDS)  <- c("sampID", "POP", "X", "Y")
+
+# Left join individual PC1 coordinates and winter1 positions:
+PC1_XY <- left_join(PC1,IND_COORDS,by='sampID') %>% drop_na(X,Y)
+i <- c(2, 4, 5)  
+PC1_XY[, i] <- apply(PC1_XY[, i], 2, function(x) as.numeric(x))
+
+# look at the data split by tagging location
+ggplot(aes(pc1, Y), data = PC1_XY) + 
+  geom_point() + 
+  facet_wrap(~ POP)
+
+# Retain only NS tagging locations with more than one observation
+PC1_XY_NS <- PC1_XY %>% filter(POP=="DK"|POP=="PB"|POP=="CH"|POP=="SQ")
+
+# fit a random-slope and random-intercept mixed model to test whether genetic makeup (pc1) affects latitudinal spawning coordinate (Y), while assuming that tagging locations have different latitudinal spawning baselines and that the relationship with genetics may vary among tagging locations. 
+mixed.ranslope <- lmer(Y ~ pc1 + (1 + pc1|POP), data = PC1_XY_NS)
+
+# summarize the results
+summary(mixed.ranslope)
+stargazer(mixed.ranslope, type = "text",
+          digits = 3,
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          digit.separator = "")
+
+# Prepare the plot:
+myPal <- colorRampPalette(c("blue","gold","red"))
+fill_colors <- transp(myPal(10)[c(5,3,2,1)], alpha=0.5)
+
+g <- ggplot(PC1_XY_NS, aes(x = pc1, y = Y, colour = POP)) +
+      facet_wrap(~factor(POP, c("SQ","CH","PB","DK")),nrow=1) +
+      geom_line(data = cbind(PC1_XY_NS, pred = predict(mixed.ranslope)), aes(y = pred), linewidth = 1) +
+      scale_color_manual(values=c("SQ"=myPal(10)[5],"CH"=myPal(10)[3],"PB"=myPal(10)[2],"DK"=myPal(10)[1])) +
+      geom_hline(yintercept=48, linetype=2) +
+      geom_point(alpha=0.5, size=2.5, colour=myPal(10)[c(3,1,2,5)][as.numeric(factor(PC1_XY_NS$POP))]) +
+      theme_classic() +
+      labs(x = "PC1", y = "Spawning latitude") +
+      theme(legend.position = "none", panel.spacing = unit(2, "lines"))
+
+# Load sample migration phenotypes to add information on individual spawning site fidelity
+PHENO = read.table("SAMPLE_MIGRATION_PHENOTYPE.txt", header=T)
+
+FID_NS <- PHENO %>% na.exclude(spawning_ground_strategy) %>% filter(population=="DK"|population=="PB"|population=="CH"|population=="SQ") %>% select(sampID,spawning_ground_strategy)
+
+# Left join spawning site fidelity with individual PC1 coordinates and winter1 positions:
+FID_PC1_Y_NS <- left_join(FID_NS,PC1_XY_NS,by='sampID')
+i <- c(3, 5, 6)  
+FID_PC1_Y_NS[, i] <- apply(FID_PC1_Y_NS[, i], 2, function(x) as.numeric(x))
+
+# Extract dataframes of individuals showing spawning site fidelity to each site for each tagging location
+SQ_FID_BOB <- FID_PC1_Y_NS %>% filter(POP=="SQ") %>% filter(spawning_ground_strategy=="BOB") %>% select(pc1,Y,POP)
+SQ_FID_NS <- FID_PC1_Y_NS %>% filter(POP=="SQ") %>% filter(spawning_ground_strategy=="ICCNS") %>% select(pc1,Y,POP)
+CH_FID_BOB <- FID_PC1_Y_NS %>% filter(POP=="CH") %>% filter(spawning_ground_strategy=="BOB") %>% select(pc1,Y,POP)
+CH_FID_NS <- FID_PC1_Y_NS %>% filter(POP=="CH") %>% filter(spawning_ground_strategy=="ICCNS") %>% select(pc1,Y,POP)
+PB_FID_BOB <- FID_PC1_Y_NS %>% filter(POP=="PB") %>% filter(spawning_ground_strategy=="BOB") %>% select(pc1,Y,POP)
+PB_FID_NS <- FID_PC1_Y_NS %>% filter(POP=="PB") %>% filter(spawning_ground_strategy=="ICCNS") %>% select(pc1,Y,POP)
+DK_FID_BOB <- FID_PC1_Y_NS %>% filter(POP=="DK") %>% filter(spawning_ground_strategy=="BOB") %>% select(pc1,Y,POP)
+DK_FID_NS <- FID_PC1_Y_NS %>% filter(POP=="DK") %>% filter(spawning_ground_strategy=="ICCNS") %>% select(pc1,Y,POP)
+
+# Add individuals showing spawning site fidelity to the plot 
+g <- g + geom_point(data = SQ_FID_BOB, size=2.5, shape=21, colour="orange") +
+  geom_point(data = SQ_FID_NS, size=2.5, shape=21, colour="green") +
+  geom_point(data = CH_FID_BOB, size=2.5, shape=21, colour="orange") +
+  geom_point(data = CH_FID_NS, size=2.5, shape=21, colour="green") +
+  geom_point(data = PB_FID_BOB, size=2.5, shape=21, colour="orange") +
+  geom_point(data = PB_FID_NS, size=2.5, shape=21, colour="green") +
+  geom_point(data = DK_FID_BOB, size=2.5, shape=21, colour="orange") +
+  geom_point(data = DK_FID_NS, size=2.5, shape=21, colour="green")
+
+# Find strips glob and change the fill color of each strip
+gt <- ggplot_gtable(ggplot_build(g))
+strips <- which(startsWith(gt$layout$name,'strip'))
+for (s in seq_along(strips)) {gt$grobs[[strips[s]]]$grobs[[1]]$children[[1]]$gp$fill <- fill_colors[s]}
+
+# Make the plot
+plot(gt)
+```
+
+
+## FIGURE 5 ##
+
+```{r message = FALSE, warning = FALSE}
+
+library('tidyverse')
+library('pheatmap')
+library('viridis')
+library('dendextend')
+library('marmap')
+
+setwd("../data")
+
+# FIG 5 # Analysis of recent IBD sharing
+
+# Load the COEFS file generated by IBIS all-in-one command
+COEFS <- read.table("BARFRAY_703_ATL_IBIS_7_100_a0_maxDist_ALL.coef", sep='\t', header=T)
+COEFS <- COEFS %>% select(-IBD2_Fraction)
+
+# Load sample summer and winter coordinates (07/09/22) and extract winter1 positions
+COORDS <- read.table("SAMPLE_SUMMER_WINTER_COORDS.txt", header=T)
+COORDS <- arrange(COORDS, sample_filename)
+
+# Extract Winter 1 coordinates
+W1_COORDS <- COORDS %>% select(sample_filename,population,Winter1_X,Winter1_Y)
+
+# Join Winter 1 coordinates for first individual in pairs
+colnames(W1_COORDS)  <- c("Individual1", "POP1", "X1", "Y1")
+COEFS <- left_join(COEFS, W1_COORDS,by=c("Individual1" = "Individual1"))
+
+# Join Winter 1 coordinates for second individual in pairs
+colnames(W1_COORDS)  <- c("Individual2", "POP2", "X2", "Y2")
+COEFS <- left_join(COEFS,W1_COORDS,by='Individual2')
+
+# Add Spawning stock information based on Winter latitude
+COEFS <- COEFS %>% mutate(Stock1=case_when(Y1<=48~'BOB', Y1>48~'NS')) %>% mutate(Stock2=case_when(Y2<=48~'BOB', Y2>48~'NS'))
+
+# Add information on regional spawning stock sharing for the pair
+COEFS <- COEFS %>% mutate(Stock12=case_when(Stock1=='BOB' & Stock2=='BOB'~'BOB_BOB',Stock1=='NS' & Stock2=='NS'~'NS_NS',Stock1=='BOB' & Stock2=='NS'~'BOB_NS',Stock1=='NS' & Stock2=='BOB'~'BOB_NS'))
+
+# Add relatedness information per pair
+COEFS <- COEFS %>% mutate(Related=case_when(Kinship_Coefficient==0~'NO', Kinship_Coefficient>0~'YES'))
+
+# FIG 5A # Heatmap of pairwise relatedness values with hierarchical clustering
+
+# Add the pair of tagging sites for each pair of individuals, sorting sites alphabetically
+COEFS_POPS <- COEFS %>% rowwise() %>% mutate(POP12 = paste(sort(c(POP1, POP2)), collapse = " - ")) %>% ungroup()
+
+# Test difference in mean relatedness within vs between tagging locations:
+W <- COEFS_POPS %>% filter(POP1==POP2) %>% select(Kinship_Coefficient)
+B <- COEFS_POPS %>% filter(POP1!=POP2) %>% select(Kinship_Coefficient)
+t.test(W,B)
+
+# Calculate mean pairwise kinship coefficient for each pair of tagging sites
+SITE_PAIR_IBD <- aggregate(Kinship_Coefficient ~ POP12, data = COEFS_POPS, FUN = mean,  na.rm = TRUE)
+SITE_PAIR_IBD <- separate(SITE_PAIR_IBD, col = POP12, into = c("POP1", "POP2"), sep = " - ")
+
+# Transform data frame into pairwise mean relatedness matrix
+SITE_PAIR_IBD <- xtabs(Kinship_Coefficient ~ POP1 + POP2, data=SITE_PAIR_IBD)
+SITE_PAIR_IBD[lower.tri(SITE_PAIR_IBD)] = t(SITE_PAIR_IBD)[lower.tri(SITE_PAIR_IBD)]
+
+# Make hierarchical clustering of tagging site pairwise relatedness values
+hclust_ibd <- hclust(dist(SITE_PAIR_IBD), method = "complete")
+
+# Flip nodes to order samples locations (does not affect the tree)
+loc_order <- c("CB","OL","NO","LT","AD","SQ","SM","CH","PB","DK")
+hclust_ibd_col <- rotate(hclust_ibd, loc_order)
+hclust_ibd_row <- rotate(hclust_ibd, loc_order)
+
+# Prepare annotation colors
+tree_col <- data.frame(cutree(hclust_ibd, k = 2))
+colnames(tree_col) <- "cluster"
+tree_col$cluster <- ifelse(tree_col$cluster==1, "cluster1","cluster2")
+
+ices_col <- as.factor(c("BOB","BOB","NS","NS","BOB","BOB","BOB","NS","NS","NS"))
+tree_col$ices <- ices_col
+
+loc_col <- data.frame(location = loc_order)
+row.names(loc_col) <- loc_col$location
+
+fill <- colorRampPalette(c("blue","gold","red"))(10)
+
+my_colour = list(
+    location = c(CB=fill[10],OL=fill[9],NO=fill[8],LT=fill[7],AD=fill[6],SQ=fill[5],SM=fill[4],CH=fill[3],PB=fill[2],DK=fill[1]),
+    ices = c(BOB="orange", NS="green"),
+    cluster = c(cluster1="#ffb366", cluster2="lightgreen"))
+
+# Make the plot
+R1 <- pheatmap(SITE_PAIR_IBD, color = viridis(n = 256, alpha = 1, begin = 0, end = 1, direction = 1), breaks = seq(0, 3e-5, length.out = 257), fontsize_number = 10, cluster_rows = hclust_ibd_row, cluster_cols = hclust_ibd_col, annotation_colors = my_colour, annotation_row = tree_col, annotation_col = loc_col, treeheight_row = 0)
+
+
+# FIG 5B # 
+
+# Set Kinship Coefficient that are not degree <=7 to zero, to only consider recent relatedness
+COEFS_7 <- mutate(COEFS, Related = ifelse(Kinship_Coefficient >0 & Degree == -1, "NO", Related))
+COEFS_7 <- mutate(COEFS_7, Kinship_Coefficient = ifelse(Kinship_Coefficient >0 & Degree == -1, 0, Kinship_Coefficient))
+
+# Proportion of related individuals per pair  
+P_RELAT <- COEFS_7 %>% count(Stock12,Related) %>% na.exclude() %>% group_by(Stock12)  %>% mutate(freq = 100*(n/sum(n))) %>% filter(Related=="YES")
+
+P_RELAT$Stock12 <- factor(P_RELAT$Stock12, levels = P_RELAT$Stock12)
+myPal <- c("orange","grey","green")
+R2 = ggplot(P_RELAT, aes(x = Stock12, y = freq)) + geom_bar(stat="identity",fill=myPal) + labs(x = "", y = "Percentage of related individuals") + theme_classic()
+
+
+# FIG 5C # 
+
+# Extract pairs with available Winter coordinates 
+WW_COEFS <- COEFS %>% filter(Stock12=="BOB_BOB" | Stock12=="NS_NS" | Stock12=="BOB_NS")
+
+# Load bathymetry on the northeast Atlantic
+ATLF <- getNOAA.bathy(lon1=-15,lon2=12,lat1=35,lat2=55,resolution=2)
+# Compute transition object with path impossible in waters deeper than -200m depth
+trans <- trans.mat(ATLF,min.depth=50,max.depth=-200)
+
+# Compute least cost distances for each pair of individual
+# Dist_12 <- NULL
+# for (i in 1:nrow(WW_COEFS))
+#  {
+#   Dist_12 <- c(Dist_12, lc.dist(trans, rbind(c(WW_COEFS$X1[i], WW_COEFS$Y1[i]),c(WW_COEFS$X2[i], WW_COEFS$Y2[i])), res ="dist"))
+#  }
+
+# Add pairwise distances for each pair of individual
+WW_COEFS_DIST <- WW_COEFS %>% mutate(Dist_12=Dist_12)
+
+# Remove aberrant distances
+WW_COEFS_DIST <- mutate(WW_COEFS_DIST, Dist_12 = ifelse(Dist_12 > 3000, NA, Dist_12)) %>% drop_na(Dist_12)
+
+# Bin the distance values into quantiles (equal number of points per bin), using 19 bins
+n_bins <- 19
+bins <- quantile(WW_COEFS_DIST$Dist_12, probs = seq(0, 1, length.out = n_bins + 1))
+x_bins <- cut(WW_COEFS_DIST$Dist_12, breaks = bins, include.lowest = TRUE)
+# Calculate midpoints for each bin
+midpoints <- sapply(1:(length(bins) - 1), function(i) mean(bins[i:(i+1)]))
+# Map midpoints to each bin
+mid_x <- midpoints[as.numeric(x_bins)]
+
+BOB_BOB <- WW_COEFS_DIST %>% filter(Stock12=="BOB_BOB") %>% pull(Kinship_Coefficient) %>% split(x_bins)
+BOB_BOB_mean <- data.frame(unlist(lapply(BOB_BOB,mean)),midpoints)
+colnames(BOB_BOB_mean) <- c("mean_kinship", "midpoints")
+BOB_BOB.model <- lm(mean_kinship ~ midpoints, data=BOB_BOB_mean)
+summary(BOB_BOB.model)
+
+NS_NS <- WW_COEFS_DIST %>% filter(Stock12=="NS_NS") %>% pull(Kinship_Coefficient) %>% split(x_bins)
+NS_NS_mean <- data.frame(unlist(lapply(NS_NS,mean)),midpoints)
+colnames(NS_NS_mean) <- c("mean_kinship", "midpoints")
+NS_NS.model <- lm(mean_kinship ~ midpoints, data=NS_NS_mean)
+summary(NS_NS.model)
+
+BOB_NS <- WW_COEFS_DIST %>% filter(Stock12=="BOB_NS") %>% pull(Kinship_Coefficient) %>% split(x_bins)
+BOB_NS_mean <- data.frame(unlist(lapply(BOB_NS,mean)),midpoints)
+colnames(BOB_NS_mean) <- c("mean_kinship", "midpoints")
+BOB_NS.model = betareg(mean_kinship ~ midpoints, data=BOB_NS_mean)
+summary(BOB_NS.model)
+
+R3 <- ggplot(BOB_NS_mean, aes(x = midpoints, y = mean_kinship)) +
+  geom_point(size = 2.5, shape = 21, colour="grey", fill="grey") +
+  geom_line(aes(y = WW_COEFS_DIST %>% filter(Stock12=="BOB_BOB") %>% pull(Kinship_Coefficient) %>% mean(), colour = "BOB_BOB", linetype = "BOB_BOB")) +
+  geom_line(aes(y = predict(BOB_NS.model, BOB_NS_mean), colour = "BOB_NS", linetype = "BOB_NS")) +
+  geom_line(aes(y = WW_COEFS_DIST %>% filter(Stock12=="NS_NS") %>% pull(Kinship_Coefficient) %>% mean(), colour = "NS_NS", linetype = "NS_NS")) +
+  scale_colour_manual("", values = c("orange", "grey", "green")) +
+  scale_linetype_manual("", values = c("dashed", "solid", "dashed")) +
+  ylim(0,2.5e-5) +
+  theme_classic() +
+  labs(x = "Distance between winter positions (km)", y = "Average kinship coefficient")
+
+```
+
+
+## FIGURE 6 ##
+
+```{r message = FALSE, warning = FALSE}
+library('ggplot2')
+library('dartR')
+library('sf')
+library('tidyverse')
+library('dplyr')
+library('ggOceanMaps')
+library('ggnewscale')
+library('ggrepel')
+library('ggpubr')
+library('ggspatial')
+library('ggforce')
+library('scatterpie')
+
+setwd("../data/")
+
+## Dataset preparation ##
+
+# Load genotype data from Taylor et al spawning samples in northeastern Atlantic
+# 15 geographic samples and 41022 SNPs
+Tspawn <- gl.load(file = "./Taylor/bass_reduced_ices_spawning.gl")
+
+# Load genotype data from Taylor et al feeding samples in northeastern Atlantic
+# 20 geographic samples and 41022 SNPs
+Tfeed <- gl.load(file = "./Taylor/bass_reduced_ices_feeding.gl")
+
+# Load Axiom_DlabCHIP Annotation File
+Annot <- read.csv("Axiom_DlabCHIP_AnnotationFile.v1.csv", header = T)
+
+# Extract Probe Set IDs from Taylor et al. and convert to dataframe
+TIDs <- data.frame(do.call("rbind", strsplit(locNames(Tspawn), "_", fixed = TRUE)))
+TIDs <- cbind(locNames(Tspawn), TIDs)
+names(TIDs) <- c("Taylor_locNames", "Probe_Set_ID", "Allele_Taylor")
+
+# Left join to Axiom_DlabCHIP Annotation File
+Annot_TIDs <- left_join(Annot, TIDs)
+
+# Extract Probe Set IDs from gDAT and convert to dataframe
+IDs <- cbind(sub("(.*?_.*?)_.*", "\\1", locNames(gDAT)), data.frame(do.call("rbind", strsplit(locNames(gDAT), "_", fixed = TRUE))))
+IDs <- cbind(locNames(gDAT), IDs)
+names(IDs) <- c("locNames", "cust_id", "chr", "pos", "Allele")
+
+# Left join to Axiom_DlabCHIP Annotation File
+Annot_TIDs_IDs <- left_join(Annot_TIDs, IDs)
+
+# Filter to only retain shared SNP loci between datasets
+shared_snps <- Annot_TIDs_IDs %>% filter(!is.na(Taylor_locNames), !is.na(locNames))
+
+# Sorts table first by chromosome, then by ascending SNP position within each chromosome
+chr_levels <- c("LG1A", "LG1B", "LG2", "LG3", "LG4", "LG5", "LG6", "LG7", "LG8", "LG9", "LG10", "LG11", "LG12",
+                "LG13", "LG14", "LG15","LG16", "LG17", "LG18-21", "LG19", "LG20", "LG22-25", "LG24", "LGx", "UN")
+shared_snps_sorted <- shared_snps %>% mutate(cust_chr = factor(cust_chr, levels = chr_levels), cust_pos = as.numeric(cust_pos)) %>% arrange(cust_chr, cust_pos)
+
+# Extract the whitelist of shared loci using both naming schemes for subsetting:
+whitelist <- shared_snps_sorted$locNames
+Twhitelist <- shared_snps_sorted$Taylor_locNames
+
+# Subset each genlight object, preserving the order of loci:
+Subset_Tspawn <- match(Twhitelist, locNames(Tspawn))
+gl_Tspawn_sub <- Tspawn[, Subset_Tspawn]
+locNames(gl_Tspawn_sub) <- whitelist
+
+Subset_Tfeed <- match(Twhitelist, locNames(Tfeed))
+gl_Tfeed_sub <- Tfeed[, Subset_Tfeed]
+locNames(gl_Tfeed_sub) <- whitelist
+
+Subset_gDAT <- match(whitelist, locNames(gDAT))
+gl_gDAT_sub <- gDAT[, Subset_gDAT]
+
+# Merge gl_Tspawn_sub with gl_Tfeed_sub
+gl_Taylor_merged <- rbind(gl_Tspawn_sub, gl_Tfeed_sub)
+
+# Sanity check assessing the correlation of allele frequencies with Taylor filtered dataset 
+af_Taylor <- glMean(gl_Taylor_merged)
+af_gDAT  <- glMean(gl_gDAT_sub)
+af_df <- data.frame(locus = names(af_Taylor), af_Taylor = af_Taylor, af_gDAT = af_gDAT, whitelist = whitelist, Twhitelist = Twhitelist)
+plot(af_df$af_Taylor, af_df$af_gDAT, xlab = "af_Taylor", ylab = "af_gDAT", pch  = 16, cex  = 0.6)
+abline(0, 1, col = "red", lwd = 2)
+mod <- lm(af_df$af_Taylor~af_df$af_gDAT)
+abline(mod, col="green")
+
+# Finally, merge the two filtered datasets
+gl_merged <- rbind(gl_Taylor_merged, gl_gDAT_sub)
+# Add chromosome and position information to Optional content and remove unnecessary loc.all
+chr(gl_merged) <- shared_snps_sorted$cust_chr
+position(gl_merged) <- shared_snps_sorted$cust_pos
+gl_merged@loc.all <- NULL
+
+# Print the sample size for each pop
+summary(gl_merged$pop)
+
+# FIG 6A # PCA analysis of Northeast Atlantic European seabass
+
+# Perform a PCA analysis that includes all individuals (from Taylor's dataset plus the 10 French locations and southern Portugal)
+pca <- glPca(gl_merged, nf=2, parallel=TRUE, n.cores=20)
+
+# Compute variance explained by the 10 first PC axes
+axis_var <- data.frame(axis = c(1:10), eig = pca$eig[c(1:10)]) %>% dplyr::mutate(p.eig = 100*(eig/sum(pca$eig)))
+pc1 <- paste("PC1 (", paste(round(axis_var$p.eig[1],2)), "%)",sep="")
+pc2 <- paste("PC2 (", paste(round(axis_var$p.eig[2],2)), "%)",sep="")
+
+# Extract first two PC scores:
+scores <- as.data.frame(pca$scores)
+
+# Annotate population samples
+scores$pop <- pop(gl_merged)
+scores$pop2 <- c(factor(rep("Taylor", 844)), pop(gl_merged)[845:1609])
+scores$season <- c(factor(rep("Spawning", 286)), factor(rep("Feeding", 558)), pop(gl_merged)[845:1609])
+
+# Plot the PCA representing in color the 10 populations from BARFRAY overlapped with the admixed sample FA and Taylor's dataset, with PC1 oriented by Mediterranean ancestry
+
+myPal <- colorRampPalette(c("blue","gold","red"))
+
+S1 = with(pca, plot(scores, yaxt="n", ylab=pc2, xlab=pc1, xlim=c(-8,5), ylim=c(-8,12), col="white"))
+legend("topleft",legend=c("CB","OL","NO","LT","AD","SQ","SM","CH","PB","DK","Taylor") ,horiz=T,cex=0.7, fill=c(rev(myPal(10)),"grey50"))
+axis(2, las=2)
+abline(h=0,v=0,col="grey50", lty=2)
+
+s.class(scores[scores$pop2!="FA",], fac=factor(scores[scores$pop2!="FA",]$pop2), 
+        add.plot=T, 
+        cpoint=2,
+        clabel=0,
+        pch=20,
+        axesell=F,
+        addaxes=F,
+        cstar=0,
+        col=transp(c("grey50", myPal(10)[c(6,10,3,1,7,8,9, 2,4,5)]),0.6),
+        cellipse = 1.5)
+
+
+# FIG 6B # European Seabass from around the UK belong to the NS spawning stock
+
+# Prepare data frame of individual PC1 coordinates:
+sampID <- rownames(scores)
+PC1 <- data.frame(cbind(sampID,scores$PC1))
+names(PC1) <- c("sampID", "pc1")
+
+# Load sample summer and winter coordinates (07/09/22) and extract winter1 positions
+COORDS <- read.table("SAMPLE_SUMMER_WINTER_COORDS.txt", header=T)
+COORDS <- arrange(COORDS, sample_filename)
+POPS = c("DK","PB","CH","SM","SQ","AD","LT","OL","NO","CB")
+
+IND_COORDS = NULL
+for (p in 1:length(POPS))
+  {
+  sampID <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Winter1_X,Winter1_Y))$sample_filename
+  X <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Winter1_X,Winter1_Y))$Winter1_X
+  Y <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Winter1_X,Winter1_Y))$Winter1_Y
+  POP_P <- cbind(sampID,POPS[p],X,Y)
+  IND_COORDS <- rbind(IND_COORDS,POP_P)
+  }
+IND_COORDS = data.frame(IND_COORDS)
+colnames(IND_COORDS)  <- c("sampID", "POP", "X", "Y")
+
+# Left join individual PC1 coordinates and winter1 positions:
+PC1_XY <- left_join(PC1,IND_COORDS,by='sampID') %>% drop_na(X,Y)
+i <- c(2, 4, 5)  
+PC1_XY[, i] <- apply(PC1_XY[, i], 2, function(x) as.numeric(x))
+
+# Define spawning stocks Reference Baselines based on winter latitude.
+# Individuals south of latitude 48 are assigned to BOB,
+# north of 48 to NS. These serve as Reference Baselines.
+PC1_XY_Stock <- PC1_XY %>% mutate(Stock = if_else(Y < 48, "BOB", "NS"))
+
+# Function to perform Kernel density estimation with bootstrap confidence intervals.
+# This function estimates the empirical density of a PC1 coordinates
+# and quantifies uncertainty using bootstrap resampling.
+density_ci <- function(x, grid, nboot = 1000, conf = 0.95) {
+  boot_dens <- replicate(
+    nboot,
+    {
+      xs <- sample(x, replace = TRUE)
+      density(xs, from = min(grid), to = max(grid), n = length(grid))$y
+    }
+  )
+  alpha <- (1 - conf)/2
+  list(
+    y   = rowMeans(boot_dens),
+    low = apply(boot_dens, 1, quantile, probs = alpha),
+    high= apply(boot_dens, 1, quantile, probs = 1 - alpha)
+  )
+}
+
+# Compute Reference Baselines PC1 densities for each spawning stock:
+pc1_grid <- seq(-5, 5, length.out = 500)
+
+dens_BOB <- density_ci(PC1_XY_Stock$pc1[PC1_XY_Stock$Stock == "BOB"], pc1_grid)
+dens_NS <- density_ci(PC1_XY_Stock$pc1[PC1_XY_Stock$Stock == "NS"], pc1_grid)
+
+# Assemble Reference Baselines' densities in a dataframe
+dens_df <- bind_rows(
+  data.frame(pc1 = pc1_grid, density = dens_BOB$y, low = dens_BOB$low, high = dens_BOB$high, group = "BOB"),
+  data.frame(pc1 = pc1_grid, density = dens_NS$y, low = dens_NS$low, high = dens_NS$high, group = "NS"))
+
+# Plot Reference Baselines' densities with empirical confidence intervals
+# The figure 6B shows PC1 empirical distributions for BOB (orange) and NS (green) Reference Baselines (assigned with tagging data); alongside empirical 95% confidence intervals.
+# Empirical distribution of PC1 coordinates for samples from Taylor et al is show with grey histogram.
+
+Taylor_pc1 <- PC1[1:844,] %>% mutate(pc1 = as.numeric(pc1))
+Taylor_pc1$group <- "Taylor"
+
+S2 <- ggplot(dens_df, aes(pc1, density, color = group, fill = group)) +
+  # Density lines
+  geom_line(size = 1) +
+  # Confidence intervals
+  geom_ribbon(aes(ymin = low, ymax = high), alpha = 0.25, color = NA) +
+  # Histogram of individuals from Taylor
+  geom_histogram(data = Taylor_pc1, aes(x = pc1, y = after_stat(density), fill = group),
+  inherit.aes = FALSE, bins = 30, color = "grey50", alpha = 0.4) +
+  # Stock colours  
+  scale_color_manual(values = c("BOB" = "orange", "NS" = "green")) +
+  scale_fill_manual(values = c("BOB" = "orange", "NS" = "green", "Taylor" = "grey50")) +
+  theme_classic() +
+  labs(x = "PC1 coordinate", y = "Density", fill = "Stock") +
+  guides(color = "none")
+
+
+## Empirical Bayesian mixed-stock framework ## 
+
+# Store Reference Baselines' as density() objects
+# These will be used for Bayesian inference of mixture proportions without individual assignment.
+d_BOB <- density(PC1_XY_Stock$pc1[PC1_XY_Stock$Stock == "BOB"])
+d_NS <- density(PC1_XY_Stock$pc1[PC1_XY_Stock$Stock == "NS"])
+
+# Interpolate empirical densities
+# Returns density values at any PC1 coordinates.
+# rule = 2 avoids zero-density artefacts at distribution tails.
+density_at <- function(x, dens) {
+  approx(dens$x, dens$y, xout = x, rule = 2)$y
+}
+
+# Empirical Bayesian inference of mixture proportions
+# Estimates the proportion 'pi' of BOB stock in a mixture sample (proportion of NS stock is 1-pi).
+# Individuals are treated as independent draws from a two-stock mixture.
+# Returns the full posterior distribution of pi.
+estimate_mixture_proportion <- function(
+  pc1_mix,  # PC1 coordinates of the mixture sample
+  d_BOB,
+  d_NS,
+  prior = c(1, 1),  # Beta prior probability of each group (i.e. equal prior probability to belong to either stock)
+  grid_length = 1000,
+  ci = 0.95
+) {
+  # Grid of sample mixture proportions
+  pi_grid <- seq(0, 1, length.out = grid_length)
+
+  # Log-likelihood for each pi
+  loglik <- sapply(pi_grid, function(pi) {
+    probs <- pi * density_at(pc1_mix, d_BOB) +
+             (1 - pi) * density_at(pc1_mix, d_NS)
+    sum(log(probs))
+  })
+
+  # Log-prior Beta to use a uniform prior on the log scale
+  # the prior contributes no information 
+  logprior <- dbeta(pi_grid, prior[1], prior[2], log = TRUE) 
+
+  # Log-posterior
+  # the posterior is driven entirely by the likelihood (Log-prior non-informative)
+  logpost <- loglik + logprior # Bayes’ theorem taking logs
+  post <- exp(logpost - max(logpost)) # Convert back from log scale and subtract the maximum to ensure the largest exponentiated value is 1
+  post <- post / sum(post) # normalize to make a proper probability distribution
+
+  # Posterior summaries
+  alpha <- (1 - ci) / 2
+  list(
+    pi_map  = pi_grid[which.max(post)], # Maximum A Posteriori (MAP) estimate of mixture proportion (point estimate)
+    ci = c(
+      pi_grid[which(cumsum(post) >= alpha)[1]],
+      pi_grid[which(cumsum(post) >= 1 - alpha)[1]]
+    ),
+    posterior = data.frame(pi = pi_grid, density = post)
+  )
+}
+
+# Bootstrap Reference Baselines' densities to propagate baseline uncertainty
+# Reference individuals are resampled with replacement.
+# For each bootstrap replicate:
+#   - Reference Baselines' densities are recomputed
+#   - mixture proportion is re-estimated
+# Resulting CIs incorporate reference-density uncertainty.
+estimate_mixture_bootstrap <- function(
+  pc1_mix,
+  pc1_BOB,
+  pc1_NS,
+  B = 1000,
+  prior = c(1, 1), # Beta prior probability of each group (i.e. equal prior probability to belong to either stock) 
+  grid_length = 1000,
+  ci = 0.95
+) {
+  pi_mean_boot <- numeric(B)
+
+  for (b in seq_len(B)) {
+
+    # Bootstrap Baseline Reference samples to recompute densities
+    d_BOB_b <- density(sample(pc1_BOB, replace = TRUE))
+    d_NS_b  <- density(sample(pc1_NS, replace = TRUE))
+
+    # Estimate mixture proportion
+    res <- estimate_mixture_proportion(
+      pc1_mix = pc1_mix,
+      d_BOB = d_BOB_b,
+      d_NS  = d_NS_b,
+      prior = prior,
+      grid_length = grid_length,
+      ci = ci
+    )
+
+    pi_mean_boot[b] <- res$pi_map # sampling distribution of pi obtained by repeatedly resampling the reference baseline
+  }
+
+  alpha <- (1 - ci) / 2
+  list(
+    pi_mean = mean(pi_mean_boot),
+    ci = quantile(
+      pi_mean_boot,
+      probs = c(alpha, 1 - alpha) # confidence interval based on the sampling distribution of pi (uncertainty due to baseline estimation)
+    ),
+    bootstrap_estimates = pi_mean_boot
+  )
+}
+
+
+## Empirical Bayesian mixed-stock Analysis ## 
+
+# Apply to Taylor's dataset treated as a mixture sample
+result_ref <- estimate_mixture_proportion(
+  pc1_mix = Taylor_pc1$pc1,
+  d_BOB = d_BOB,
+  d_NS  = d_NS
+)
+
+# Bootstrap-propagated uncertainty
+result_boot <- estimate_mixture_bootstrap(
+  pc1_mix = Taylor_pc1$pc1,
+  pc1_BOB = PC1_XY_Stock$pc1[PC1_XY_Stock$Stock == "BOB"],
+  pc1_NS  = PC1_XY_Stock$pc1[PC1_XY_Stock$Stock == "NS"],
+  B = 1000
+)
+
+# FIG 6C #  Mixed-stock analysis within ICES area in SUMMER1
+
+# Extract summer1 positions
+IND_COORDS = NULL
+for (p in 1:length(POPS))
+  {
+  sampID <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Summer1_X,Summer1_Y))$sample_filename
+  X <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Summer1_X,Summer1_Y))$Summer1_X
+  Y <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Summer1_X,Summer1_Y))$Summer1_Y
+  POP_P <- cbind(sampID,POPS[p],X,Y)
+  IND_COORDS <- rbind(IND_COORDS,POP_P)
+  }
+IND_COORDS = data.frame(IND_COORDS)
+colnames(IND_COORDS)  <- c("sampID", "POP", "X", "Y")
+
+# Left join individual PC1 coordinates and summer1 positions:
+SUMMER1_PC1_XY <- left_join(PC1,IND_COORDS,by='sampID') %>% drop_na(X,Y)
+i <- c(2, 4, 5)  
+SUMMER1_PC1_XY[, i] <- apply(SUMMER1_PC1_XY[, i], 2, function(x) as.numeric(x))
+
+# load ICES polygons and rectangles
+data("ices_areas", package = "ggOceanMaps")
+
+# Convert individual summer1 positions dataframe to sf (WGS84)
+SUMMER1_PC1_XY_sf <- st_as_sf(SUMMER1_PC1_XY, coords = c("X", "Y"), crs = 4326)
+# Transform individual positions to match ICES CRS (3995)
+SUMMER1_PC1_XY_sf <- st_transform(SUMMER1_PC1_XY_sf, st_crs(ices_areas))
+# Spatial join
+SUMMER1_PC1_XY_sf_ICES <- st_join(SUMMER1_PC1_XY_sf, ices_areas, join = st_intersects)
+# Drop geometry column to convert to a regular data frame
+SUMMER1_PC1_XY_sf_ICES <- SUMMER1_PC1_XY_sf_ICES %>% st_drop_geometry()
+# List of summer1 ICES areas for the map
+SUMMER1_ICES <- c("27.8.c", "27.8.b", "27.8.a", "27.7.e", "27.7.d", "27.4.c")
+# Filter summer1 ICES areas and select columns
+SUMMER1_PC1_ICES <- SUMMER1_PC1_XY_sf_ICES %>% filter(Area_Full %in% SUMMER1_ICES) %>% dplyr::select(sampID, pc1, POP, Area_Full)
+
+# Extract Feeding samples and PC1 coordinates from Taylor's dataset
+FEEDING_PC1_POP <- scores %>% filter(season=="Feeding") %>% dplyr::select(PC1, pop)
+colnames(FEEDING_PC1_POP) <- c("pc1", "ICESNAME")
+# Read ICES rectangle shapefile from local disk (requires .shp, .dbf and ..shx files in the same directory)
+rects_sf <- st_read(dsn = "./Taylor/ICES_Statistical_Rectangles_Eco.shp")
+# Assign CRS for the rectangles
+st_crs(rects_sf) <- 4326
+# Make CRS match between rectangles and ICES areas so that they can be spatially joined
+rects_sf <- st_transform(rects_sf, st_crs(ices_areas))
+# Assign rectangles to areas
+rects_with_area <- st_join(rects_sf, ices_areas, join = st_within, largest = TRUE)
+# Select columns of rectangle and ICES areas' names
+rects_df <- rects_with_area %>% st_drop_geometry() %>% dplyr::select(ICESNAME, Area_Full)
+# Assign ICES areas to Taylor's Feeding dataset
+FEEDING_PC1_ICES <- left_join(FEEDING_PC1_POP, rects_df, by = "ICESNAME")
+# List of FEEDING ICES areas for the map
+FEEDING_ICES <- c("27.7.g", "27.7.f", "27.7.d", "27.7.b", "27.7.a", "27.6.a", "27.4.c", "27.4.b", "27.3.a.20")
+# Filter FEEDING ICES areas and select columns
+FEEDING_PC1_ICES <- FEEDING_PC1_ICES %>% filter(Area_Full %in% FEEDING_ICES) %>% dplyr::select(pc1, ICESNAME, Area_Full)
+
+# Vector of all ICES areas covered by FEEDING samples (merged dataset)
+MERGED_FEEDING_ICES <- c("27.8.c", "27.8.b", "27.8.a", "27.7.e", "27.7.g", "27.7.f", "27.7.d", "27.7.b", "27.7.a", "27.6.a", "27.4.c", "27.4.b", "27.3.a.20")
+
+FEEDING_ICES_MIX <- data.frame(
+  Area_Full = character(),
+  n = numeric(),
+  BOB_Pi = numeric(),
+  BOB_Pi_low = numeric(),
+  BOB_Pi_hi = numeric(),
+  BOB_Pi_boot = numeric(),
+  BOB_Pi_boot_low = numeric(),
+  BOB_Pi_boot_hi = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (i in seq_along(MERGED_FEEDING_ICES)) {
+
+  area_i <- MERGED_FEEDING_ICES[i]
+
+  PC1_ICES <- bind_rows(
+    SUMMER1_PC1_ICES %>% filter(Area_Full == area_i) %>% dplyr::select(pc1),
+    FEEDING_PC1_ICES %>% filter(Area_Full == area_i) %>% dplyr::select(pc1)
+  )
+  
+  Pi_ICES <- estimate_mixture_proportion(pc1_mix = PC1_ICES$pc1, d_BOB = d_BOB, d_NS  = d_NS)
+  
+  Pi_ICES_boot <- estimate_mixture_bootstrap(pc1_mix = PC1_ICES$pc1, 
+                                             pc1_BOB = PC1_XY_Stock$pc1[PC1_XY_Stock$Stock == "BOB"], 
+                                             pc1_NS  = PC1_XY_Stock$pc1[PC1_XY_Stock$Stock == "NS"], 
+                                             B = 1000)
+  
+  FEEDING_ICES_MIX <- bind_rows(
+    FEEDING_ICES_MIX,
+    data.frame(
+      Area_Full = area_i,
+      n = nrow(PC1_ICES),
+      BOB_Pi = Pi_ICES$pi_map,
+      BOB_Pi_low = Pi_ICES$ci[1],
+      BOB_Pi_hi = Pi_ICES$ci[2],
+      BOB_Pi_boot = Pi_ICES_boot$pi_mean,
+      BOB_Pi_boot_low = Pi_ICES_boot$ci[1],
+      BOB_Pi_boot_hi = Pi_ICES_boot$ci[2]    
+    )
+  )
+}
+
+# Compute NS proportions
+FEEDING_ICES_MIX <- FEEDING_ICES_MIX %>% mutate(
+                                  # Compute NS proportions
+                                  NS_Pi = 1-BOB_Pi, 
+                                  NS_Pi_low = 1-BOB_Pi_low, 
+                                  NS_Pi_hi = 1-BOB_Pi_hi,
+                                  NS_Pi_boot = 1-BOB_Pi_boot, 
+                                  NS_Pi_boot_low = 1-BOB_Pi_boot_low, 
+                                  NS_Pi_boot_hi = 1-BOB_Pi_boot_hi, 
+                                  # Pie radius scaled by sample size
+                                  radius = log(n + 1) * 15000,
+                                  # convert CI to radians
+                                  arc_start = 2*pi*BOB_Pi_low,
+                                  arc_end   = 2*pi*BOB_Pi_hi,
+                                  # CI color depending on predominant origin
+                                  CI_col = ifelse(BOB_Pi >= 0.5, "BOB", "NS"))
+
+# Compute ICES centroids for positioning pies
+ices_clean <- sf::st_transform(sf::st_make_valid(ices_areas), 4326)
+
+centroids <- ices_clean %>%
+  filter(Area_Full %in% FEEDING_ICES_MIX$Area_Full) %>%
+  st_centroid() %>%
+  cbind(sf::st_coordinates(.)) %>%
+  st_drop_geometry() %>%
+  select(Area_Full, X = X, Y = Y)
+
+# Join with inferred mixture proportions dataframe:
+FEEDING_ICES_MIX <- FEEDING_ICES_MIX %>% left_join(centroids, by = "Area_Full")
+
+# Make coordinates match the map projection:
+FEEDING_ICES_MIX_sf <- st_as_sf(FEEDING_ICES_MIX, coords = c("X","Y"), crs = 4326)
+FEEDING_ICES_MIX_sf <- st_transform(FEEDING_ICES_MIX_sf, 3995)
+
+# Extract the projected coordinates for plotting:
+coords <- st_coordinates(FEEDING_ICES_MIX_sf)
+FEEDING_ICES_MIX$x <- coords[,1]
+FEEDING_ICES_MIX$y <- coords[,2]
+
+# Make the map and overlay pie charts:
+S3 = basemap(limits = c(-12,10,42,58), bathymetry = TRUE,  land.col = "#eeeac4", grid.col = NA, grid.size = 0.5, base_size = 18, bathy.style = "poly_greys") +
+  labs(x = "Longitude", y = "Latitude") +
+  ggnewscale::new_scale_fill() +
+  annotation_spatial(ices_areas[36:37,], mapping = aes(), fill="purple", col="purple", alpha = 0.1) + 
+  annotation_spatial(ices_areas[39:40,], mapping = aes(), fill="orange", col="orange", alpha = 0.1) + 
+  annotation_spatial(ices_areas[c(7:8,43:48),], mapping = aes(), fill="green", col="green", alpha = 0.1) + 
+  annotation_spatial(ices_areas[c(27,41:42),], mapping = aes(), fill="blue", col="blue", alpha = 0.1) + 
+  theme(legend.position = "none")
+
+S3 = reorder_layers(S3) + annotation_scale(location = "br") +
+ggtitle("Mixture Proportions During Feeding Season")
+
+S3 <- S3 + geom_scatterpie(data = FEEDING_ICES_MIX,
+    aes(x = x, y = y, r = radius),
+    cols = c("BOB_Pi","NS_Pi"),
+    color = "black") +
+  scale_fill_manual(values = c(
+    BOB_Pi = "orange",
+    NS_Pi  = "green")) +
+  geom_arc(data = FEEDING_ICES_MIX,
+    aes(x0 = x, y0 = y, r = radius * 1.15, start = arc_start, end = arc_end, colour = CI_col),
+    linewidth = 1.4, alpha = 0.9) + 
+  scale_colour_manual(
+    values = c(BOB="green", NS="orange"),
+    guide = "none")
+
+
+# FIG 6D #  Mixed-stock analysis within ICES area in WINTER1
+
+# Extract winter1 positions
+IND_COORDS = NULL
+for (p in 1:length(POPS))
+  {
+  sampID <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Winter1_X,Winter1_Y))$sample_filename
+  X <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Winter1_X,Winter1_Y))$Winter1_X
+  Y <- (COORDS %>% filter(population==POPS[p]) %>% drop_na(Winter1_X,Winter1_Y))$Winter1_Y
+  POP_P <- cbind(sampID,POPS[p],X,Y)
+  IND_COORDS <- rbind(IND_COORDS,POP_P)
+  }
+IND_COORDS = data.frame(IND_COORDS)
+colnames(IND_COORDS)  <- c("sampID", "POP", "X", "Y")
+
+# Left join individual PC1 coordinates and winter1 positions:
+WINTER1_PC1_XY <- left_join(PC1,IND_COORDS,by='sampID') %>% drop_na(X,Y)
+i <- c(2, 4, 5)  
+WINTER1_PC1_XY[, i] <- apply(WINTER1_PC1_XY[, i], 2, function(x) as.numeric(x))
+
+# load ICES polygons and rectangles
+data("ices_areas", package = "ggOceanMaps")
+
+# Convert individual winter1 positions dataframe to sf (WGS84)
+WINTER1_PC1_XY_sf <- st_as_sf(WINTER1_PC1_XY, coords = c("X", "Y"), crs = 4326)
+# Transform individual positions to match ICES CRS (3995)
+WINTER1_PC1_XY_sf <- st_transform(WINTER1_PC1_XY_sf, st_crs(ices_areas))
+# Spatial join
+WINTER1_PC1_XY_sf_ICES <- st_join(WINTER1_PC1_XY_sf, ices_areas, join = st_intersects)
+# Drop geometry column to convert to a regular data frame
+WINTER1_PC1_XY_sf_ICES <- WINTER1_PC1_XY_sf_ICES %>% st_drop_geometry()
+# List of winter1 ICES areas for the map
+WINTER1_ICES <- c("27.8.c", "27.8.b", "27.8.a", "27.7.h", "27.7.e", "27.7.d", "27.4.c")
+# Filter winter1 ICES areas and select columns
+WINTER1_PC1_ICES <- WINTER1_PC1_XY_sf_ICES %>% filter(Area_Full %in% WINTER1_ICES) %>% dplyr::select(sampID, pc1, POP, Area_Full)
+
+# Extract Spawning samples and PC1 coordinates from Taylor's dataset
+SPAWNING_PC1_POP <- scores %>% filter(season=="Spawning") %>% dplyr::select(PC1, pop)
+colnames(SPAWNING_PC1_POP) <- c("pc1", "ICESNAME")
+# Read ICES rectangle shapefile from local disk (requires .shp, .dbf and ..shx files in the same directory)
+rects_sf <- st_read(dsn = "./Taylor/ICES_Statistical_Rectangles_Eco.shp")
+# Assign CRS for the rectangles
+st_crs(rects_sf) <- 4326
+# Make CRS match between rectangles and ICES areas so that they can be spatially joined
+rects_sf <- st_transform(rects_sf, st_crs(ices_areas))
+# Assign rectangles to areas
+rects_with_area <- st_join(rects_sf, ices_areas, join = st_within, largest = TRUE)
+# Select columns of rectangle and ICES areas' names
+rects_df <- rects_with_area %>% st_drop_geometry() %>% dplyr::select(ICESNAME, Area_Full)
+# Assign ICES areas to Taylor's Feeding dataset
+SPAWNING_PC1_ICES <- left_join(SPAWNING_PC1_POP, rects_df, by = "ICESNAME")
+# List of FEEDING ICES areas for the map
+SPAWNING_ICES <- c("27.7.f", "27.7.e", "27.7.d", "27.7.b", "27.7.a", "27.4.c")
+# Filter FEEDING ICES areas and select columns
+SPAWNING_PC1_ICES <- SPAWNING_PC1_ICES %>% filter(Area_Full %in% SPAWNING_ICES) %>% dplyr::select(pc1, ICESNAME, Area_Full)
+
+
+# Vector of all ICES areas covered by SPAWNING samples (merged dataset)
+MERGED_SPAWNING_ICES <- c("27.8.c", "27.8.b", "27.8.a", "27.7.e", "27.7.f", "27.7.d", "27.7.b", "27.7.a", "27.4.c")
+
+SPAWNING_ICES_MIX <- data.frame(
+  Area_Full = character(),
+  n = numeric(),
+  BOB_Pi = numeric(),
+  BOB_Pi_low = numeric(),
+  BOB_Pi_hi = numeric(),
+  BOB_Pi_boot = numeric(),
+  BOB_Pi_boot_low = numeric(),
+  BOB_Pi_boot_hi = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (i in seq_along(MERGED_SPAWNING_ICES)) {
+
+  area_i <- MERGED_SPAWNING_ICES[i]
+
+  PC1_ICES <- bind_rows(
+    WINTER1_PC1_ICES %>% filter(Area_Full == area_i) %>% dplyr::select(pc1),
+    SPAWNING_PC1_ICES %>% filter(Area_Full == area_i) %>% dplyr::select(pc1)
+  )
+  
+  Pi_ICES <- estimate_mixture_proportion(pc1_mix = PC1_ICES$pc1, d_BOB = d_BOB, d_NS  = d_NS)
+  
+  Pi_ICES_boot <- estimate_mixture_bootstrap(pc1_mix = PC1_ICES$pc1, 
+                                             pc1_BOB = PC1_XY_Stock$pc1[PC1_XY_Stock$Stock == "BOB"], 
+                                             pc1_NS  = PC1_XY_Stock$pc1[PC1_XY_Stock$Stock == "NS"], 
+                                             B = 1000)
+  
+  SPAWNING_ICES_MIX <- bind_rows(
+    SPAWNING_ICES_MIX,
+    data.frame(
+      Area_Full = area_i,
+      n = nrow(PC1_ICES),
+      BOB_Pi = Pi_ICES$pi_map,
+      BOB_Pi_low = Pi_ICES$ci[1],
+      BOB_Pi_hi = Pi_ICES$ci[2],
+      BOB_Pi_boot = Pi_ICES_boot$pi_mean,
+      BOB_Pi_boot_low = Pi_ICES_boot$ci[1],
+      BOB_Pi_boot_hi = Pi_ICES_boot$ci[2]    
+    )
+  )
+}
+
+# Compute NS proportions
+SPAWNING_ICES_MIX <- SPAWNING_ICES_MIX %>% mutate(
+                                  # Compute NS proportions
+                                  NS_Pi = 1-BOB_Pi, 
+                                  NS_Pi_low = 1-BOB_Pi_low, 
+                                  NS_Pi_hi = 1-BOB_Pi_hi,
+                                  NS_Pi_boot = 1-BOB_Pi_boot, 
+                                  NS_Pi_boot_low = 1-BOB_Pi_boot_low, 
+                                  NS_Pi_boot_hi = 1-BOB_Pi_boot_hi, 
+                                  # Pie radius scaled by sample size
+                                  radius = log(n + 1) * 15000,
+                                  # convert CI to radians
+                                  arc_start = 2*pi*BOB_Pi_low,
+                                  arc_end   = 2*pi*BOB_Pi_hi,
+                                  # CI color depending on predominant origin
+                                  CI_col = ifelse(BOB_Pi >= 0.5, "BOB", "NS"))
+
+# Compute ICES centroids for positioning pies
+ices_clean <- sf::st_transform(sf::st_make_valid(ices_areas), 4326)
+
+centroids <- ices_clean %>%
+  filter(Area_Full %in% SPAWNING_ICES_MIX$Area_Full) %>%
+  st_centroid() %>%
+  cbind(sf::st_coordinates(.)) %>%
+  st_drop_geometry() %>%
+  select(Area_Full, X = X, Y = Y)
+
+# Join with inferred mixture proportions dataframe:
+SPAWNING_ICES_MIX <- SPAWNING_ICES_MIX %>% left_join(centroids, by = "Area_Full")
+
+# Make coordinates match the map projection:
+SPAWNING_ICES_MIX_sf <- st_as_sf(SPAWNING_ICES_MIX, coords = c("X","Y"), crs = 4326)
+SPAWNING_ICES_MIX_sf <- st_transform(SPAWNING_ICES_MIX_sf, 3995)
+
+# Extract the projected coordinates for plotting:
+coords <- st_coordinates(SPAWNING_ICES_MIX_sf)
+SPAWNING_ICES_MIX$x <- coords[,1]
+SPAWNING_ICES_MIX$y <- coords[,2]
+
+# Make the map and overlay pie charts:
+S4 = basemap(limits = c(-12,10,42,58), bathymetry = TRUE,  land.col = "#eeeac4", grid.col = NA, grid.size = 0.5, base_size = 18, bathy.style = "poly_greys") +
+  labs(x = "Longitude", y = "Latitude") +
+  ggnewscale::new_scale_fill() +
+  annotation_spatial(ices_areas[36:37,], mapping = aes(), fill="purple", col="purple", alpha = 0.1) + 
+  annotation_spatial(ices_areas[39:40,], mapping = aes(), fill="orange", col="orange", alpha = 0.1) + 
+  annotation_spatial(ices_areas[c(7:8,43:48),], mapping = aes(), fill="green", col="green", alpha = 0.1) + 
+  annotation_spatial(ices_areas[c(27,41:42),], mapping = aes(), fill="blue", col="blue", alpha = 0.1) + 
+  theme(legend.position = "none")
+
+S4 = reorder_layers(S4) + annotation_scale(location = "br") +
+ggtitle("Mixture Proportions During Spawning Season")
+
+S4 <- S4 + geom_scatterpie(data = SPAWNING_ICES_MIX,
+    aes(x = x, y = y, r = radius),
+    cols = c("BOB_Pi","NS_Pi"),
+    color = "black") +
+  scale_fill_manual(values = c(
+    BOB_Pi = "orange",
+    NS_Pi  = "green")) +
+  geom_arc(data = SPAWNING_ICES_MIX,
+    aes(x0 = x, y0 = y, r = radius * 1.15, start = arc_start, end = arc_end, colour = CI_col),
+    linewidth = 1.4, alpha = 0.9) + 
+  scale_colour_manual(
+    values = c(BOB="green", NS="orange"),
+    guide = "none")
+
+```
